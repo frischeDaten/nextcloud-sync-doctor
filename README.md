@@ -36,8 +36,18 @@ hostnames, user names or paths.
 
 ## Install
 
-**Windows, nothing to install.** Needs Python 3.10+ (the launcher looks on `PATH` and in
-`%LOCALAPPDATA%\Programs\Python`):
+Requires **Python 3.10 or newer**. The launcher finds `py`, `python`, `python3`, or a
+default install under `%LOCALAPPDATA%\Programs\Python`.
+
+**No Git needed — use the ZIP.** Download
+[`nextcloud-sync-doctor-1.0.0.zip`](https://github.com/frischeDaten/nextcloud-sync-doctor/releases/latest),
+unpack it anywhere (it contains a single folder) and double-click
+**`Nextcloud Sync Doctor.cmd`**. If Windows shows a SmartScreen prompt, choose *More info
+→ Run anyway*.
+
+**From a checkout:** run **`Nextcloud Sync Doctor.cmd`** in the repository folder.
+
+Either way:
 
 1. Make sure the Nextcloud desktop client has run at least once for the account.
 2. Double-click **`Nextcloud Sync Doctor.cmd`**.
@@ -46,10 +56,10 @@ hostnames, user names or paths.
 4. Press **Rescan**. Fix things. Press **Rescan** again (or restart the client from the
    **Client…** button) to watch the list empty out.
 
-**As a Python package** (from a checkout, or `pipx install git+https://…` later):
+**As a Python package:**
 
 ```bash
-pip install -e .
+pip install -e .            # or: pipx install git+https://github.com/frischeDaten/nextcloud-sync-doctor
 ncsd serve
 ```
 
@@ -58,7 +68,7 @@ changed:
 
 ```bash
 ncsd --demo serve        # the UI with sample issues
-ncsd --demo scan         # the CLI with sample issues
+"Nextcloud Sync Doctor.cmd" --demo    # same, from the ZIP
 ```
 
 There are no runtime dependencies beyond the Python standard library.

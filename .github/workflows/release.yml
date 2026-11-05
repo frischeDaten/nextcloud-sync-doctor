@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, e.g. v1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish the ZIP bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build the bundle
+        run: python tools/build_release.py
+
+      - name: Verify the bundle by unpacking and running it
+        run: |
+          set -euo pipefail
+          ZIP="$(ls dist/*.zip)"
+          python -m zipfile -e "$ZIP" dist/unpacked
+          BUNDLE="$(ls -d dist/unpacked/nextcloud-sync-doctor-*/ | head -1)"
+          echo "bundle: $BUNDLE"
+          cd "$BUNDLE"
+          python -m ncsd --version
+          python -m ncsd --demo scan
+          test -f "Nextcloud Sync Doctor.cmd"
+          test -f "ncsd/static/index.html"
+          test -f "ncsd/static/app.js"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          ZIP="dist/nextcloud-sync-doctor-${VERSION}.zip"
+          test -f "$ZIP"
+          SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
+          SIZE="$(du -h "$ZIP" | cut -f1)"
+
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then
+            CHANGES="$(git log --oneline "${PREV}..${TAG}")"
+          else
+            CHANGES="$(git log --oneline "${TAG}")"
+          fi
+
+          cat > notes.md <<EOF
+          ## Download
+
+          **\`nextcloud-sync-doctor-${VERSION}.zip\`** (${SIZE}) — no Git needed.
+
+          1. Download and unpack the ZIP anywhere (it contains a single folder).
+          2. Double-click **Nextcloud Sync Doctor.cmd**.
+          3. Your browser opens on the local UI; press **Rescan**.
+
+          Requires **Python 3.10 or newer**. The launcher finds \`py\`, \`python\`, \`python3\`
+          or a default install under \`%LOCALAPPDATA%\\Programs\\Python\`. If Windows shows a
+          SmartScreen prompt, choose *More info → Run anyway*.
+
+          Want to look around without touching your account? Run the launcher with \`--demo\`.
+
+          Prefer a package? \`pipx install git+https://github.com/${GITHUB_REPOSITORY}.git\`,
+          or \`pip install -e .\` from a checkout.
+
+          ## Verify the download
+
+          \`\`\`
+          sha256  ${SHA}
+          \`\`\`
+
+          ## What it does
+
+          Shows the files that actually fail to sync — including names Windows cannot store,
+          which the client cannot resolve on its own — with the local and the server version
+          side by side. Keep local / keep server / keep both, rename on the server, restore
+          server versions, delete to trash, ignore. Backups before every overwrite, full
+          audit trail, local-only UI with a per-run token.
+
+          Standard library only, no runtime dependencies. GPL-2.0-or-later.
+
+          ## Changes
+
+          \`\`\`
+          ${CHANGES}
+          \`\`\`
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists, replacing the asset"
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" \
+              --title "Nextcloud Sync Doctor ${VERSION}" \
+              --notes-file notes.md \
+              --verify-tag
+          fi

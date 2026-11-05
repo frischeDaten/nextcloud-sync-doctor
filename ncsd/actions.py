@@ -81,6 +81,13 @@ ACTION_LABELS = {
     "dismiss": "Hide from this list",
 }
 
+# These move or compare file *content*; they make no sense for a folder.
+FILE_ONLY_ACTIONS = {
+    "keep_local", "keep_server", "keep_both", "keep_both_local_name",
+    "download_remote", "upload_local", "download_as",
+    "restore_version", "restore_version_in_place",
+}
+
 
 def _glob_escape(path: str) -> str:
     """Escape a literal path for the client's gitignore-style exclude file."""
@@ -183,9 +190,18 @@ class Resolver:
         params = params or {}
         full = self.local_path(rel_path)
         local_exists = os.path.exists(full)
+        local_is_dir = os.path.isdir(full)
         remote = self._remote_stat(rel_path)
         remote_exists = remote is not None
+        remote_is_dir = bool(remote and remote.is_dir)
+        is_dir = local_is_dir or remote_is_dir
         name = names.basename(rel_path)
+
+        if is_dir and action in FILE_ONLY_ACTIONS:
+            raise ActionError(
+                f"'{name}' is a folder - that action only works on files. "
+                "Use rename, delete, ignore or hide instead."
+            )
 
         if action == "keep_local":
             if not local_exists:
@@ -407,7 +423,10 @@ class Resolver:
 
             elif action == "delete_local":
                 backup = self._backup_local(rel_path)
-                os.remove(full)
+                if os.path.isdir(full):
+                    shutil.rmtree(full)
+                else:
+                    os.remove(full)
                 if item is not None:
                     details["note"] = "the client will download the server copy again"
                 message = f"Removed the local copy of '{names.basename(rel_path)}'"

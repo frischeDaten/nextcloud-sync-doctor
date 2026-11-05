@@ -90,17 +90,25 @@ errors, which is why an exclamation mark rarely tells you anything.
 
 ### It stays honest about what is still broken
 
-Log lines and journal rows describe the **past**. Every scan re-checks both sides, so an
-entry leaves the list as soon as it stops being a problem:
+Log lines and journal rows describe the **past**. Every scan re-checks the current state,
+so an entry leaves the list as soon as it stops being a problem:
 
-* if neither a local nor a server file exists at that path any more, the entry is marked
-  **✓ resolved** and moves out of the way (the *Resolved* chip keeps the history);
-* if the server file was renamed to a Windows-safe name, it even says what it is called
-  now — `Fixed: the server file now exists as 'pricing_grid_(star).pdf'.`;
+* **an older sync run said this, but later runs were clean** → marked **✓ resolved**. The
+  client's log records every run; if the folder has synced since without repeating the
+  error, the error was transient (a locked file, a retried `MKCOL`, a timeout);
+* if neither a local nor a server file exists at that path any more, the entry is resolved
+  too; if the server file was renamed to a Windows-safe name, it even says what it is
+  called now — `Fixed: the server file now exists as 'pricing_grid_(star).pdf'.`;
 * log lines older than seven days are ignored unless the file is still there, so an old
-  rotated log cannot resurrect a problem you already fixed.
+  rotated log cannot resurrect a problem you already fixed;
+* **folders are shown as folders.** A directory has no meaningful "size" to compare (the
+  server reports the recursive total, Windows reports a directory entry), so the row says
+  `folder`, comparison and previews are not offered, and only the actions that make sense
+  for a folder remain: rename, delete, open, ignore.
 
 ![Resolved entries](docs/ui-resolved.png)
+
+![A folder with an error](docs/ui-folder.png)
 
 ### Where the data comes from
 

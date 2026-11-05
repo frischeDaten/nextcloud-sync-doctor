@@ -336,6 +336,10 @@ function renderRow(issue) {
   const badgeCls = issue.severity;
   const local = issue.local || {};
   const remote = issue.remote || {};
+  const localLabel = !local.exists ? '<span class="absent">missing</span>'
+    : local.is_dir ? 'folder' : esc(fmtSize(local.size));
+  const remoteLabel = !remote.exists ? '<span class="absent">missing</span>'
+    : remote.is_dir ? 'folder' : esc(fmtSize(remote.size));
 
   row.innerHTML = `
     <div class="caret">▶</div>
@@ -346,6 +350,7 @@ function renderRow(issue) {
           ? '<span class="badge resolved">✓ resolved</span>'
           : `<span class="badge ${badgeCls}">${esc(issue.kind_label)}</span>`}
         ${issue.dismissed ? '<span class="badge noise">hidden</span>' : ''}
+        ${issue.is_dir ? '<span class="badge noise">folder</span>' : ''}
         ${issue.occurrences > 1 && !issue.resolved ? `<span class="badge noise">×${issue.occurrences}</span>` : ''}
       </div>
       <div class="row-path" title="${esc(issue.path)}">${esc(issue.path)}</div>
@@ -355,8 +360,8 @@ function renderRow(issue) {
     </div>
     <div class="row-side">
       <div class="side-meta">
-        <div>local&nbsp;<b>${local.exists ? esc(fmtSize(local.size)) : '<span class="absent">missing</span>'}</b></div>
-        <div>server&nbsp;<b>${remote.exists ? esc(fmtSize(remote.size)) : '<span class="absent">missing</span>'}</b></div>
+        <div>local&nbsp;<b>${localLabel}</b></div>
+        <div>server&nbsp;<b>${remoteLabel}</b></div>
       </div>
     </div>`;
 
@@ -392,10 +397,16 @@ function toggleIssue(issue) {
 function sideBlock(issue, side) {
   const data = side === 'local' ? issue.local : issue.remote;
   const exists = data && data.exists;
+  const isDir = Boolean(data && data.is_dir) || (exists && issue.is_dir && side === 'remote' && data.is_dir);
   const kind = kindOf(issue.title);
   const metaRows = [];
   if (exists) {
-    metaRows.push(['size', esc(fmtSize(data.size))]);
+    if (isDir) {
+      metaRows.push(['type', 'folder']);
+      if (side === 'remote' && data.size) metaRows.push(['content', esc(fmtSize(data.size))]);
+    } else {
+      metaRows.push(['size', esc(fmtSize(data.size))]);
+    }
     metaRows.push(['modified', esc(fmtTime(data.mtime))]);
     if (side === 'remote') {
       if (data.fileid) metaRows.push(['file id', esc(data.fileid)]);
@@ -409,10 +420,10 @@ function sideBlock(issue, side) {
     : `<div class="absent-note">${side === 'local'
       ? 'Not present locally — Windows cannot create this name, or the file was never downloaded.'
       : 'Not present on the server.'}</div>`;
-  const preview = exists
+  const preview = exists && !isDir
     ? `<div class="preview" data-side="${side}"></div>`
     : '';
-  const buttons = exists && kind !== 'binary'
+  const buttons = exists && !isDir && kind !== 'binary'
     ? `<div class="actions" style="margin-top:10px">
         <button class="btn small ghost" data-preview="${side}">Preview ${kind}</button>
       </div>`
@@ -441,8 +452,12 @@ function fillDetail(container, issue) {
 
   renderActions(container.querySelector('[data-actions]'), issue);
 
-  if (issue.remote && issue.remote.exists) {
+  if (issue.remote && issue.remote.exists && !issue.is_dir) {
     renderVersions(container.querySelector('[data-extra]'), issue);
+  } else if (issue.is_dir) {
+    const extra = container.querySelector('[data-extra]');
+    extra.innerHTML = `<p class="dim">This is a <b>folder</b>. Version history applies to files, so
+      there is nothing to compare here — but you can rename it on the server, delete it, or hide it.</p>`;
   } else {
     const extra = container.querySelector('[data-extra]');
     if (issue.resolved) {

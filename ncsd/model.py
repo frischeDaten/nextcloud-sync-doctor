@@ -37,6 +37,7 @@ def preview_kind(name: str) -> str:
 @dataclass
 class FileSide:
     exists: bool = False
+    is_dir: bool = False
     size: int = 0
     mtime: float = 0.0
     md5: str = ""
@@ -119,6 +120,13 @@ class Issue:
         return KINDS.get(self.kind, {}).get("severity", "warning")
 
     @property
+    def is_dir(self) -> bool:
+        return bool(
+            (self.local and self.local.is_dir)
+            or (self.remote and self.remote.is_dir)
+        )
+
+    @property
     def has_both(self) -> bool:
         return self.local.exists and bool(self.remote and self.remote.exists)
 
@@ -137,6 +145,7 @@ class Issue:
             "last_seen": self.last_seen,
             "local": self.local.to_dict(),
             "remote": self.remote.to_dict() if self.remote else None,
+            "is_dir": self.is_dir,
             "actions": self.actions,
             "suggested_name": self.suggested_name,
             "occurrence_paths": self.occurrence_paths,

@@ -148,7 +148,10 @@ class Store:
     def backup_local_file(self, local_path: str, rel_path: str) -> str:
         dest = self.resolve_backup_path(self.new_backup_dir(), rel_path)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.copy2(local_path, dest)
+        if os.path.isdir(local_path):
+            shutil.copytree(local_path, dest)
+        else:
+            shutil.copy2(local_path, dest)
         return dest
 
     def backups_size(self) -> tuple[int, int]:

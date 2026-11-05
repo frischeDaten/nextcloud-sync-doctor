@@ -15,6 +15,7 @@ import gzip
 import hashlib
 import os
 import re
+import stat
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -72,6 +73,12 @@ REMOTE_ONLY_ACTIONS = [
     "download_remote", "rename_remote", "download_as",
     "delete_remote", "open_remote", "ignore", "dismiss",
 ]
+# Content transfer and previews make no sense for a folder; renaming, deleting
+# and opening it do.
+DIR_ALLOWED_ACTIONS = {
+    "rename_remote", "rename_local", "delete_remote", "delete_local",
+    "open_local", "open_remote", "ignore", "dismiss",
+}
 
 
 @dataclass
@@ -82,6 +89,18 @@ class LogEntry:
     timestamp: float
     occurrences: int
     activity_type: str = ""
+    run_id: int = 0
+    stale: bool = False
+
+
+@dataclass
+class LogScan:
+    """What the logs say, plus where the client's sync runs begin and end."""
+
+    entries: dict[str, LogEntry]
+    latest_run: int = 0
+    latest_completed_run: int = -1
+    in_progress: bool = False
 
 
 @dataclass
@@ -127,14 +146,36 @@ def _open_log(path: str):
     return open(path, "rt", encoding="utf-8", errors="replace")
 
 
-def parse_logs(paths: list[str]) -> dict[str, LogEntry]:
-    """Newest wins: logs are read oldest -> newest so later runs overwrite."""
+RUN_START_MARKER = "#### Discovery start"
+RUN_END_MARKERS = ("SyncEngine finished", "Sync run took")
+
+
+def parse_logs(paths: list[str]) -> LogScan:
+    """Parse oldest -> newest.
+
+    Sync runs are delimited by the engine's own markers, so every error can be
+    attributed to the run it happened in. That is what separates "still failing"
+    from "failed once, fifteen minutes and two syncs ago".
+    """
     found: dict[str, LogEntry] = {}
     counts: dict[str, int] = {}
+    run_id = 0
+    latest_completed = -1
+    run_open = False
+
     for path in paths:
         try:
             with _open_log(path) as fh:
                 for line in fh:
+                    if RUN_START_MARKER in line:
+                        run_id += 1
+                        run_open = True
+                        continue
+                    if any(marker in line for marker in RUN_END_MARKERS):
+                        if run_open:
+                            latest_completed = run_id
+                            run_open = False
+                        continue
                     if "Error successfully added" not in line and "Could not complete propagation" not in line:
                         continue
                     ts = _parse_ts(line)
@@ -156,10 +197,17 @@ def parse_logs(paths: list[str]) -> dict[str, LogEntry]:
                         error=message,
                         timestamp=ts or found.get(rel, LogEntry("", "", "", 0, 0)).timestamp,
                         occurrences=counts[rel],
+                        run_id=run_id,
                     )
         except OSError:
             continue
-    return found
+
+    return LogScan(
+        entries=found,
+        latest_run=run_id,
+        latest_completed_run=latest_completed,
+        in_progress=run_open,
+    )
 
 
 def _md5_of(path: str, chunk: int = 1024 * 256) -> str:
@@ -185,9 +233,10 @@ def local_side(local_root: str, rel_path: str, with_hash: bool = False) -> FileS
         side.error = exc.__class__.__name__
         return side
     side.exists = True
-    side.size = st.st_size
+    side.is_dir = stat.S_ISDIR(st.st_mode)
+    side.size = 0 if side.is_dir else st.st_size
     side.mtime = st.st_mtime
-    if with_hash and st.st_size <= 64 * 1024 * 1024:
+    if with_hash and not side.is_dir and st.st_size <= 64 * 1024 * 1024:
         side.md5 = _md5_of(full)
     return side
 
@@ -197,6 +246,7 @@ def remote_side(item: RemoteItem | None) -> FileSide | None:
         return None
     return FileSide(
         exists=True,
+        is_dir=item.is_dir,
         size=item.size,
         mtime=item.mtime,
         fileid=item.fileid,
@@ -252,14 +302,20 @@ def collect(
 
     # --- 1. client logs ---------------------------------------------------
     if options.include_logs:
-        entries = parse_logs(config.recent_logs())
+        logscan = parse_logs(config.recent_logs())
+        # Errors logged before the last completed run are history: the client has
+        # synced this folder since without reporting them again.
+        cutoff = (logscan.latest_completed_run if logscan.in_progress
+                  else logscan.latest_run)
+        stale_below = cutoff if cutoff >= 0 else 0
         now = time.time()
         max_age = options.log_max_age_days * 86400 if options.log_max_age_days else 0
-        for rel, entry in entries.items():
+        for rel, entry in logscan.entries.items():
             # Logs are history: ignore lines older than the window unless the file is
             # still broken (the reality check below decides that).
             if max_age and entry.timestamp and (now - entry.timestamp) > max_age:
                 continue
+            entry.stale = entry.run_id < stale_below
             name = names.basename(rel)
             if entry.status == "FileIgnored" or names.is_junk_name(name):
                 kind = "junk" if names.is_junk_name(name) else "ignored"
@@ -268,7 +324,11 @@ def collect(
                 problems = names.windows_problems(name, names.local_full_path(local_root, rel))
                 if problems and kind not in ("filename_invalid",):
                     kind = "filename_invalid"
-            add(rel, kind, entry.error, "client log", entry.status, entry.timestamp, entry.occurrences)
+            issue = add(rel, kind, entry.error, "client log", entry.status, entry.timestamp, entry.occurrences)
+            if entry.stale:
+                issue.details["log_stale"] = True
+                issue.details["log_run"] = entry.run_id
+                issue.details["latest_run"] = logscan.latest_run
 
     # --- 2. sync journal --------------------------------------------------
     if options.include_journal and journal_obj is not None:
@@ -282,10 +342,14 @@ def collect(
                 "category": row.errorcategory,
                 "rename_target": row.rename_target,
             }
+            # The journal still holds this item, so it is not merely historical.
+            issue.details["journal_signal"] = True
         for row in journal_obj.conflicts:
-            add(row.path, "conflict", "Local and server versions diverged", "sync journal")
+            add(row.path, "conflict", "Local and server versions diverged", "sync journal").details["journal_signal"] = True
         for row in journal_obj.case_conflicts:
-            add(row.path, "case_conflict", "Differs from another server file only by capitalisation", "sync journal")
+            issue = add(row.path, "case_conflict", "Differs from another server file only by capitalisation",
+                        "sync journal")
+            issue.details["journal_signal"] = True
 
         if options.include_conflict_copies:
             for rel, row in journal_obj.rows.items():
@@ -351,13 +415,16 @@ def collect(
             remote_checked = True
 
         issue.actions = _actions_for(issue.kind, issue.local, issue.remote, has_remote)
+        if issue.is_dir:
+            issue.actions = [a for a in issue.actions if a in DIR_ALLOWED_ACTIONS] or ["dismiss"]
+            issue.details["is_dir"] = True
         if not issue.local.exists and has_remote:
             issue.details["server_only"] = True
 
         # --- reality check ------------------------------------------------
-        # Log lines and journal rows describe the past. If neither side exists any
-        # more, the message is history: the problem was fixed (renamed, deleted,
-        # resolved by a later sync). Never report that as a live blocking issue.
+        # Log lines and journal rows describe the past. An entry is history when
+        #  * neither side exists any more (fixed, renamed or deleted), or
+        #  * the client completed a later sync run without reporting it again.
         if remote_checked and not issue.local.exists and not has_remote:
             issue.resolved = True
             issue.resolved_note = (
@@ -377,6 +444,16 @@ def collect(
                         f"Fixed: the server file now exists as '{names.basename(renamed_to)}'."
                     )
                     issue.details["renamed_to"] = renamed_to
+        elif issue.details.get("log_stale") and not issue.details.get("journal_signal"):
+            issue.resolved = True
+            issue.resolved_note = (
+                "The client reported this in an earlier sync run and has synced this "
+                "folder successfully since, without mentioning it again."
+            )
+            issue.details["runs_since"] = max(
+                0, issue.details.get("latest_run", 0) - issue.details.get("log_run", 0)
+            )
+            issue.actions = ["dismiss"]
 
     if not options.include_junk:
         issues = [i for i in issues if i.kind != "junk"]

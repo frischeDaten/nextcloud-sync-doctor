@@ -90,6 +90,9 @@ REMOTE_ITEMS: dict[str, RemoteItem] = {
         "Documents/._notes.txt", 4096, _ago(days=12), "512933", "e1b7d3a9c5f28406b1d9e3a7c5f28", "b1d9e3a7"),
     "Documents/Travel/.DS_Store": _remote(
         "Documents/Travel/.DS_Store", 6148, _ago(days=19), "512940", "7a2c8e4b6d0f13579b2d4e6a8c0f24", "2d4e6a8c"),
+    "Projects/Website/assets": RemoteItem(
+        path="Projects/Website/assets", is_dir=True, size=1_284_602, mtime=_ago(days=3, hours=2),
+        fileid="512944", permissions="RGDNVW", etag="5c1d9b3a"),
 }
 
 VERSIONS: dict[str, list[dict]] = {
@@ -177,6 +180,25 @@ def build_issues() -> list[Issue]:
             local=_local(locked, 812_444, _ago(days=2, hours=8)),
             remote=_side(locked),
             actions=list(detect.BOTH_ACTIONS),
+        ),
+        Issue(
+            key="sync_error:Projects/Website/assets",
+            kind="sync_error",
+            path="Projects/Website/assets",
+            title="assets",
+            reason="Server error: an unexpected error occurred while creating this folder",
+            status="NormalError",
+            sources=["client log"],
+            occurrences=2,
+            last_seen=_ago(days=3, hours=2),
+            local=FileSide(exists=True, is_dir=True, mtime=_ago(days=3, hours=3)),
+            remote=FileSide(
+                exists=True, is_dir=True, size=1_284_602, mtime=_ago(days=3, hours=2),
+                fileid="512944", etag="5c1d9b3a",
+            ),
+            actions=["rename_local", "rename_remote", "delete_local", "delete_remote",
+                     "open_local", "open_remote", "ignore", "dismiss"],
+            details={"is_dir": True},
         ),
         Issue(
             key="junk:Documents/._notes.txt",

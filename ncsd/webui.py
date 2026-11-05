@@ -396,18 +396,25 @@ class Handler(BaseHTTPRequestHandler):
     # -- content -----------------------------------------------------------
     def _read_local_text(self, rel: str) -> tuple[str, bool]:
         full = self.session.local_path(rel)
+        if os.path.isdir(full):
+            raise HttpError("This is a folder, not a file - there is nothing to compare.", 400)
         if not os.path.exists(full):
             raise HttpError("No local file", 404)
         if os.path.getsize(full) > MAX_TEXT_BYTES:
             raise HttpError("File is too large to compare", 413)
-        with open(full, "rb") as fh:
-            data = fh.read(MAX_TEXT_BYTES)
+        try:
+            with open(full, "rb") as fh:
+                data = fh.read(MAX_TEXT_BYTES)
+        except OSError as exc:
+            raise HttpError(f"Cannot read the local file: {exc.strerror or exc}", 403) from None
         return data.decode("utf-8", "replace"), True
 
     def _read_remote_text(self, rel: str) -> tuple[str, bool]:
         item = self.session.dav.stat(rel)
         if item is None:
             raise HttpError("No server file", 404)
+        if item.is_dir:
+            raise HttpError("This is a folder, not a file - there is nothing to compare.", 400)
         if item.size > MAX_TEXT_BYTES:
             raise HttpError("File is too large to compare", 413)
         with self.session.dav.open_download(rel) as resp:
@@ -485,6 +492,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_bytes(data, ctype, inline_name=f"{names.basename(rel)} (v{version})")
 
         if side == "local":
+            if os.path.isdir(target):
+                raise HttpError("This is a folder - there is no content to show.", 400)
             if not os.path.isfile(target):
                 raise HttpError("No local file", 404)
             if os.path.getsize(target) > MAX_RAW_BYTES:
@@ -495,6 +504,8 @@ class Handler(BaseHTTPRequestHandler):
         item = self.session.dav.stat(rel)
         if item is None:
             raise HttpError("File not found on the server", 404)
+        if item.is_dir:
+            raise HttpError("This is a folder - there is no content to show.", 400)
         if item.size > MAX_RAW_BYTES:
             raise HttpError("File too large to preview", 413)
         with self.session.dav.open_download(rel) as resp:

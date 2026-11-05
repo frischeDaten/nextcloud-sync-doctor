@@ -1,5 +1,8 @@
 # Nextcloud Sync Doctor
 
+[![CI](https://github.com/frischeDaten/nextcloud-sync-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/frischeDaten/nextcloud-sync-doctor/actions/workflows/ci.yml)
+[![License: GPL-2.0-or-later](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](LICENSE)
+
 A per-file sync problem resolver for the Nextcloud Desktop Client on Windows.
 
 The client tells you *"Some files could not be synced!"* and sends you to an activity

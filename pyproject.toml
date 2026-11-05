@@ -32,9 +32,9 @@ dependencies = []
 ncsd = "ncsd.cli:main"
 
 [project.urls]
-# Add these once the repository exists, e.g.:
-# Homepage = "https://github.com/<owner>/nextcloud-sync-doctor"
-# Issues = "https://github.com/<owner>/nextcloud-sync-doctor/issues"
+Homepage = "https://github.com/frischeDaten/nextcloud-sync-doctor"
+Issues = "https://github.com/frischeDaten/nextcloud-sync-doctor/issues"
+Changelog = "https://github.com/frischeDaten/nextcloud-sync-doctor/commits/main"
 
 [tool.setuptools]
 # "ncsd.static" holds the HTML/CSS/JS and is listed so setuptools does not warn about

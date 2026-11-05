@@ -35,9 +35,26 @@ INCLUDE_DIRS = ["ncsd", "docs"]
 EXCLUDE_SUFFIXES = (".pyc", ".pyo")
 EXCLUDE_PARTS = {"__pycache__", ".git", "dist", "build", ".github", ".idea", ".vscode"}
 
+# Line endings are normalised so the archive is identical no matter how the
+# checkout was configured (core.autocrlf, .gitattributes, Windows vs Linux).
+TEXT_SUFFIXES = {
+    ".md", ".py", ".js", ".mjs", ".css", ".html", ".toml", ".txt", ".cfg", ".ini",
+    ".yml", ".yaml", ".json", ".cmd", ".bat", ".ps1",
+}
+CRLF_SUFFIXES = {".cmd", ".bat"}
+
 # 1980-01-01 00:00:00, the earliest a ZIP can represent.
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 FIXED_MODE = 0o644
+
+
+def normalise_bytes(path: Path, data: bytes) -> bytes:
+    suffix = path.suffix.lower()
+    if suffix in CRLF_SUFFIXES:
+        return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    if suffix in TEXT_SUFFIXES:
+        return data.replace(b"\r\n", b"\n")
+    return data
 
 
 def package_version() -> str:
@@ -100,9 +117,12 @@ def build(out_dir: Path) -> Path:
         for path in files:
             rel = path.relative_to(ROOT).as_posix()
             info = zipfile.ZipInfo(f"{folder}/{rel}", date_time=FIXED_DATE)
+            # Pin the "made by" system byte; Python otherwise picks it per platform
+            # (0 on Windows, 3 on POSIX) and the archive stops being reproducible.
+            info.create_system = 3
             info.external_attr = (0o100000 | FIXED_MODE) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, path.read_bytes())
+            archive.writestr(info, normalise_bytes(path, path.read_bytes()))
 
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     size = target.stat().st_size

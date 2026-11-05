@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nextcloud Sync Doctor</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🩺</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🩺</span>
+    <div>
+      <h1>Nextcloud Sync Doctor <span class="badge demo" id="demo-badge" hidden>demo data</span></h1>
+      <p class="sub" id="account-line">connecting…</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button class="btn ghost" id="btn-client" title="Quit or start the Nextcloud desktop client">Client…</button>
+    <button class="btn ghost" id="btn-audit" title="Show the audit trail and backups">History</button>
+    <button class="btn ghost" id="btn-deep" title="Crawl the server tree for names Windows cannot store">Deep scan</button>
+    <button class="btn primary" id="btn-scan">Rescan</button>
+  </div>
+</header>
+
+<div class="deepbanner" id="deepbanner" hidden>
+  <div class="deepbanner-text" id="deepbanner-text">Scanning server…</div>
+  <div class="progress"><div class="progress-fill" id="deep-progress"></div></div>
+</div>
+
+<main>
+  <section class="tiles" id="tiles"></section>
+
+  <section class="controls">
+    <div class="chips" id="chips"></div>
+    <div class="controls-right">
+      <input id="search" type="search" placeholder="Filter by name or path…" autocomplete="off">
+      <label class="switch" title="._* resource forks, .DS_Store and similar files the client merely ignores">
+        <input type="checkbox" id="toggle-junk">
+        <span>Show junk/noise</span>
+      </label>
+    </div>
+  </section>
+
+  <section id="issues" class="issues"></section>
+
+  <section id="empty" class="empty" hidden>
+    <div class="empty-icon">✅</div>
+    <h2>No sync problems found</h2>
+    <p>Everything in this folder is in sync. If the client still shows a warning, it is most likely the
+      known bug where ignored files (<code>._*</code>, <code>.DS_Store</code>) are reported as errors.</p>
+  </section>
+</main>
+
+<footer>
+  <span id="footer-info"></span>
+  <span class="spacer"></span>
+  <span id="footer-dirs"></span>
+</footer>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <h2 id="modal-title">Confirm</h2>
+    <div id="modal-body" class="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="modal-cancel">Cancel</button>
+      <button class="btn primary" id="modal-ok">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

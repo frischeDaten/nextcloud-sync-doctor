@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Byte-compile everything
+        run: python -m compileall -q ncsd
+
+      - name: CLI works without a Nextcloud account
+        run: python -m ncsd --version
+
+      - name: Demo scan (no client, no server, no network)
+        run: python -m ncsd --demo scan
+
+      - name: Demo scan as JSON
+        run: python -m ncsd --demo scan --json
+
+      - name: Build a wheel and install it
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          python -m pip install dist/*.whl
+
+      - name: The installed entry point works
+        run: ncsd --demo scan
+
+      - name: Static assets shipped with the package
+        run: python -c "import os, ncsd.webui as w; assert os.path.isfile(os.path.join(w.STATIC_DIR, 'index.html')), w.STATIC_DIR"

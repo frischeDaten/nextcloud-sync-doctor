@@ -1,43 +1,26 @@
-# Nextcloud Sync Doctor 1.1.0 — see and fix every file that fails to sync (Windows + macOS)
+# Nextcloud Sync Doctor 1.1.0: see and fix every file that fails to sync (Windows and macOS)
 
 I have no support/technical question and have seen the support category.
 
 Hi all,
 
-when the desktop client says *"Some files could not be synced!"* it sends you to the
-activity list, which is not filtered, cannot show what the server actually has, and has
-no per-file way out of a problem that is not a textbook conflict. On a Mac the same list
-can also show errors you cannot clear at all.
+when the desktop client says "Some files could not be synced", it sends you to the activity list. That list is not filtered, it cannot show what the server actually has, and for anything that is not a textbook conflict it offers no way out. On a Mac the same list can show errors that you cannot clear at all.
 
-I built **Nextcloud Sync Doctor** for exactly that list. It reads the client's own data,
-talks to your server with the client's own credentials, and shows the files that are
-really broken — with your local version and the server version side by side, and one
-decision per file:
+I wrote Nextcloud Sync Doctor for that list. It reads the client's own data and talks to your server with the client's own credentials. For each broken file it shows your local version and the server version side by side, and you pick one:
 
-- keep **local**, keep **server**, or keep **both**
-- **rename on the server** so a name Windows can't store (a Mac-created `pricing_grid_*.pdf`) syncs everywhere
-- **roll back** to an earlier server version, or pull one out as a copy
-- **delete** on either side (server deletes go to the trash), **ignore** forever, or hide
+- keep the local file, keep the server file, or keep both
+- rename the file on the server, so a name Windows cannot store (say, a `pricing_grid_*.pdf` made on a Mac) syncs everywhere
+- roll the server file back to an earlier version, or download one as a copy
+- delete on either side (server deletes go to the trash), ignore the file, or hide the entry
 
-Every overwrite is backed up locally first, every action is logged, and the UI runs on
-127.0.0.1 with a per-run token. Standard library only — no dependencies.
+It backs up every overwrite locally before doing it and logs every action. The UI only listens on 127.0.0.1 and needs a per-run token. No dependencies beyond the Python standard library.
 
-**What it finds:** names Windows can't store, upper/lower-case clashes, conflicts, sync
-errors, over-long paths, and ignored files that the client still reports as errors. On
-macOS it also finds Finder deletions that pile up in the folder's local `.Trash`, cloud
-placeholders that were never downloaded, and the FileProvider folder the client does not
-record in `nextcloud.cfg`.
+What it finds: names Windows cannot store, upper/lower case clashes, conflicts, sync errors, over-long paths, and ignored files that the client still reports as errors. On macOS it also finds Finder deletions that pile up in the folder's local `.Trash`, cloud placeholders that were never downloaded, and the FileProvider folder that the client does not record in `nextcloud.cfg`.
 
-**New in 1.1.0:** macOS support (sandbox-aware config discovery with a Full Disk Access
-explanation, keychain credential reuse, FileProvider folder discovery) and `ncsd check` /
-**Check the folder itself** — a local name check that needs neither the server nor the
-client's journal, for exactly the situation where the log and journal are unreadable.
+New in 1.1.0: macOS support (sandbox-aware config discovery with a Full Disk Access explanation, keychain credential reuse, FileProvider folder discovery) and `ncsd check` / "Check the folder itself", a local name check that needs neither the server nor the client's journal. That is for the case where the log and the journal cannot be read.
 
 - Project: https://github.com/frischeDaten/nextcloud-sync-doctor
-- Release (ZIPs for Windows and macOS): https://github.com/frischeDaten/nextcloud-sync-doctor/releases/latest
-- GPL-2.0-or-later, Python 3.10+
+- Release, ZIPs for Windows and macOS: https://github.com/frischeDaten/nextcloud-sync-doctor/releases/latest
+- GPL-2.0-or-later, Python 3.10 or newer
 
-It is a companion to the client, not a replacement: the missing resolution UI rather than
-a second sync engine. I would especially like to hear from people who sync the same folder
-between macOS and Windows — that is where most of the problems come from — and from macOS
-users, since the FileProvider behaviour is the part I know least about.
+It is not a replacement for the client and not a second sync engine. It is the resolution UI the client is missing. I would like to hear from people who sync the same folder between macOS and Windows, because that is where most of the problems come from, and from macOS users, because the FileProvider behaviour is the part I know least about.

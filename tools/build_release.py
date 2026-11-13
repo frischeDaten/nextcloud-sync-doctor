@@ -25,13 +25,15 @@ ROOT = Path(__file__).resolve().parent.parent
 # Files (and folders) that belong in the bundle.
 INCLUDE_FILES = [
     "Nextcloud Sync Doctor.cmd",
+    "Nextcloud Sync Doctor.command",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "SECURITY.md",
     "CONTRIBUTING.md",
     "pyproject.toml",
 ]
-INCLUDE_DIRS = ["ncsd", "docs"]
+INCLUDE_DIRS = ["ncsd", "docs", "tests", "tools"]
 EXCLUDE_SUFFIXES = (".pyc", ".pyo")
 EXCLUDE_PARTS = {"__pycache__", ".git", "dist", "build", ".github", ".idea", ".vscode"}
 
@@ -39,13 +41,16 @@ EXCLUDE_PARTS = {"__pycache__", ".git", "dist", "build", ".github", ".idea", ".v
 # checkout was configured (core.autocrlf, .gitattributes, Windows vs Linux).
 TEXT_SUFFIXES = {
     ".md", ".py", ".js", ".mjs", ".css", ".html", ".toml", ".txt", ".cfg", ".ini",
-    ".yml", ".yaml", ".json", ".cmd", ".bat", ".ps1",
+    ".yml", ".yaml", ".json", ".cmd", ".bat", ".ps1", ".command", ".sh",
 }
 CRLF_SUFFIXES = {".cmd", ".bat"}
+# Scripts that must arrive executable on macOS/Linux (double-click in Finder needs it).
+EXECUTABLE_FILES = {"Nextcloud Sync Doctor.command"}
 
 # 1980-01-01 00:00:00, the earliest a ZIP can represent.
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 FIXED_MODE = 0o644
+EXECUTABLE_MODE = 0o755
 
 
 def normalise_bytes(path: Path, data: bytes) -> bytes:
@@ -120,7 +125,8 @@ def build(out_dir: Path) -> Path:
             # Pin the "made by" system byte; Python otherwise picks it per platform
             # (0 on Windows, 3 on POSIX) and the archive stops being reproducible.
             info.create_system = 3
-            info.external_attr = (0o100000 | FIXED_MODE) << 16
+            mode = EXECUTABLE_MODE if rel in EXECUTABLE_FILES else FIXED_MODE
+            info.external_attr = (0o100000 | mode) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, normalise_bytes(path, path.read_bytes()))
 

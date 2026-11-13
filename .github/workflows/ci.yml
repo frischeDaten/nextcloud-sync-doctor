@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.10", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
@@ -47,3 +47,30 @@ jobs:
 
       - name: Static assets shipped with the package
         run: python -c "import os, ncsd.webui as w; assert os.path.isfile(os.path.join(w.STATIC_DIR, 'index.html')), w.STATIC_DIR"
+
+  macos:
+    name: macOS specifics
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Platform detection and macOS paths
+        run: python -c "import ncsd.platform as p; assert p.is_macos() and p.platform_name() == 'macos'; print(p.config_candidates()[0].path)"
+
+      - name: Keychain attribute parsing (no keychain needed)
+        run: python -m unittest discover -s tests -v
+
+      - name: Launcher is executable and LF-only
+        run: |
+          test -x "Nextcloud Sync Doctor.command"
+          if grep -q $'\r' "Nextcloud Sync Doctor.command"; then
+            echo "launcher contains CRLF"; exit 1
+          fi
+          bash -n "Nextcloud Sync Doctor.command"
+
+      - name: Demo scan through the launcher
+        run: ./"Nextcloud Sync Doctor.command" --demo scan --no-browser

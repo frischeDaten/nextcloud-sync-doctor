@@ -34,6 +34,18 @@ if errorlevel 1 (
   exit /b 1
 )
 
-%PY% -m ncsd serve %*
+rem --- default to the web UI, but pass a subcommand through ("... --demo scan") ---
+set "CMD=serve"
+for %%A in (%*) do (
+  if /i "%%~A"=="scan" set "CMD="
+  if /i "%%~A"=="serve" set "CMD="
+  if /i "%%~A"=="check" set "CMD="
+  if /i "%%~A"=="report" set "CMD="
+)
+if defined CMD (
+  %PY% -m ncsd serve %*
+) else (
+  %PY% -m ncsd %*
+)
 if errorlevel 1 pause
 endlocal

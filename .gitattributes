@@ -5,5 +5,9 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 
+# macOS launchers must keep LF (a CRLF shell script fails with "bad interpreter").
+*.command text eol=lf
+*.sh text eol=lf
+
 *.png binary
 *.ico binary

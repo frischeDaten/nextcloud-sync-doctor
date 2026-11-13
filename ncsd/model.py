@@ -83,6 +83,17 @@ KINDS = {
         "severity": "noise",
         "blurb": "Excluded by the client's ignore rules, but still reported as a sync error.",
     },
+    "mac_trash": {
+        "label": "Leftover in Finder trash",
+        "severity": "warning",
+        "blurb": "Deleted in Finder on macOS: the item sits in the folder's local .Trash, "
+                 "which the client cannot sync. Remove the leftover locally to clear it.",
+    },
+    "conflict_copy": {
+        "label": "Conflict copy",
+        "severity": "noise",
+        "blurb": "A copy the client made on purpose when both sides changed. Not an error.",
+    },
     "junk": {
         "label": "macOS / Windows junk",
         "severity": "noise",

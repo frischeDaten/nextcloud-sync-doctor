@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 
-from . import config, detect, journal, names
+from . import config, detect, journal, names, platform
 from .actions import ACTION_LABELS, ActionError, Outcome, Plan
 from .dav import RemoteItem
 from .model import FileSide, Issue, preview_kind
@@ -37,10 +37,12 @@ def build_context() -> tuple[config.ClientConfig, config.Account, config.SyncFol
     )
     folder = config.SyncFolder(
         index=0,
-        local_path=r"C:\Users\alex\Nextcloud",
+        # Windows and macOS have different conventions for where a sync folder
+        # lives; the fixtures follow the platform the demo runs on.
+        local_path=platform.demo_sync_root(),
         target_path="/",
         journal_name=".sync_1a2b3c4d5e6f.db",
-        virtual_files_mode="wincfapi",
+        virtual_files_mode=platform.demo_vfs_mode(),
     )
     account.folders.append(folder)
     cfg = config.ClientConfig(path="", accounts=[account], client_version=CLIENT_VERSION, is_vfs_enabled=True)
@@ -245,6 +247,25 @@ def build_issues() -> list[Issue]:
             remote=None,
             actions=["dismiss"],
         ),
+        # macOS only: the Finder moves deleted items into a local ".Trash" folder on
+        # FileProvider volumes instead of removing them, and the client then reports
+        # them as sync errors that can never be resolved from the server side.
+        Issue(
+            key="mac_trash:Documents/.Trash/Budget 2027.xlsx",
+            kind="mac_trash",
+            path="Documents/.Trash/Budget 2027.xlsx",
+            title="Budget 2027.xlsx",
+            reason="Not found in local storage: the item was deleted in Finder and only "
+                   "its local leftover in .Trash remains.",
+            status="NormalError",
+            sources=["client log", "sync journal"],
+            occurrences=4,
+            last_seen=_ago(hours=2),
+            local=_local("Documents/.Trash/Budget 2027.xlsx", 18_432, _ago(days=2)),
+            remote=None,
+            actions=list(detect.MAC_TRASH_ACTIONS),
+            details={"journal_signal": True},
+        ),
         Issue(
             key="filename_invalid:Projects/Website/old_export_*.csv",
             kind="filename_invalid",
@@ -409,8 +430,11 @@ class DemoSession:
         self.resolver = DemoResolver(self.dav)
         data_dir = os.path.join(tempfile.mkdtemp(prefix="ncsd-demo-"), "data")
         self.store = Store(data_dir=data_dir)
-        self.issues = build_issues()
+        # Keep the complete fixture list: scan() filters noise from a working copy.
+        self.all_issues = build_issues()
+        self.issues = list(self.all_issues)
         self.journal_obj = DemoJournal()
+        self.journal_error = ""
         self.lock = threading.Lock()
         self.deep_state = detect.DeepScanState()
         self.deep_results: list[dict] = []
@@ -428,7 +452,7 @@ class DemoSession:
     def scan(self, include_junk: bool | None = None, use_deep: bool = False) -> list[Issue]:
         if include_junk is None:
             include_junk = bool(self.store.settings.get("include_junk", False))
-        issues = [i for i in self.issues if include_junk or i.kind != "junk"]
+        issues = [i for i in self.all_issues if include_junk or i.severity != "noise"]
         with self.lock:
             self.issues = issues
         return issues

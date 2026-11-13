@@ -11,17 +11,19 @@ Three independent sources, merged:
 
 from __future__ import annotations
 
+import collections
 import gzip
 import hashlib
 import os
 import re
 import stat
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-from . import config, journal, names
+from . import config, journal, names, platform
 from .dav import Dav, DavError, RemoteItem
 from .model import KIND_ORDER, SEVERITY_ORDER, FileSide, Issue, preview_kind
 
@@ -79,6 +81,10 @@ DIR_ALLOWED_ACTIONS = {
     "rename_remote", "rename_local", "delete_remote", "delete_local",
     "open_local", "open_remote", "ignore", "dismiss",
 }
+# A file the macOS Finder put into the sync folder's local .Trash folder. The
+# server copy is normally already deleted, so the only sane moves are to remove
+# the local leftover (it is backed up first) or to leave it alone.
+MAC_TRASH_ACTIONS = ["delete_local", "open_local", "dismiss"]
 
 
 @dataclass
@@ -122,6 +128,7 @@ def normalise_name(name: str) -> str:
     ``pricing_grid_*.pdf`` and ``pricing_grid_(star).pdf`` normalise to the same value,
     which is how a completed server-side rename is recognised.
     """
+    name = names.nfc(name)
     stem, dot, ext = name.rpartition(".")
     if not dot:
         stem, ext = name, ""
@@ -236,9 +243,177 @@ def local_side(local_root: str, rel_path: str, with_hash: bool = False) -> FileS
     side.is_dir = stat.S_ISDIR(st.st_mode)
     side.size = 0 if side.is_dir else st.st_size
     side.mtime = st.st_mtime
+    if platform.is_macos():
+        side.attributes = mac_local_attributes(full, st)
     if with_hash and not side.is_dir and st.st_size <= 64 * 1024 * 1024:
         side.md5 = _md5_of(full)
     return side
+
+
+UF_DATAVAULT = 0x80000000  # "the content lives in the cloud provider, not on disk"
+UF_COMPRESSED = 0x00000020
+
+
+def _xattr_names(path: str) -> list[str]:
+    try:
+        out = subprocess.run(
+            ["xattr", path], capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def local_name_problems(root: str | list[str], max_entries: int = 200000,
+                        max_seconds: float = 180.0, progress=None, base: str = "") -> dict:
+    """Walk the sync folder and check every name against the client's own rules.
+
+    This needs neither the journal nor the server: it finds names Windows cannot
+    store, case clashes, over-long paths and junk that is already on disk. It is
+    what a user can run when the log and journal are unreadable, and it is also
+    useful to confirm that an empty issue list is genuinely empty.
+    """
+    roots = [root] if isinstance(root, str) else list(root)
+    # Relative paths are reported from the folder the caller cares about, so pass the
+    # sync folder itself as `base` when walking only parts of it.
+    base = base or roots[0]
+    result = {
+        "root": base, "dirs": 0, "files": 0, "problems": [], "complete": True, "errors": 0,
+        "checked_roots": len(roots),
+    }
+    if not roots or not all(os.path.isdir(r) for r in roots):
+        result["complete"] = False
+        return result
+    deadline = time.monotonic() + max_seconds
+    # macOS (and Windows) cannot hold two names that differ only by case, so the
+    # folder listing shows one of them and a case clash between local files is
+    # invisible here. Server-side clashes are found by the deep scan instead.
+    case_insensitive = platform.is_macos() or platform.is_windows()
+    for walk_root in roots:
+        # Breadth first: the folders a user actually uses are near the top, so a
+        # time limit still produces useful results instead of one deep branch.
+        pending = collections.deque([walk_root])
+        while pending:
+            dirpath = pending.popleft()
+            try:
+                entries = list(os.scandir(dirpath))
+            except OSError:
+                result["errors"] += 1
+                continue
+            dirnames = []
+            filenames = []
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        dirnames.append(entry.name)
+                    else:
+                        filenames.append(entry.name)
+                except OSError:
+                    result["errors"] += 1
+            dirnames.sort()
+            # Virtual environments and dependency folders are ignored by the client and
+            # can hold hundreds of thousands of files; skipping them keeps the check fast.
+            pending.extend(
+                os.path.join(dirpath, d) for d in dirnames if not names.is_ignored_dir_name(d)
+            )
+            result["dirs"] += 1
+            rel_dir = os.path.relpath(dirpath, base)
+            rel_dir = "" if rel_dir == "." else rel_dir
+            for name in filenames:
+                rel = f"{rel_dir}/{name}" if rel_dir else name
+                result["files"] += 1
+                full = names.local_full_path(base, rel)
+                problems = names.windows_problems(name, full)
+                if names.is_mac_trash_path(rel):
+                    kind = "mac_trash"
+                elif names.is_junk_name(name):
+                    kind = "junk"
+                elif problems:
+                    kind = "filename_invalid"
+                elif len(full) > names.MAX_PATH:
+                    kind = "path_too_long"
+                else:
+                    continue
+                result["problems"].append({
+                    "kind": kind, "path": rel,
+                    "reason": "; ".join(problems) if problems else "",
+                })
+            if not case_insensitive:
+                for group in names.case_collisions(filenames):
+                    result["problems"].append({
+                        "kind": "case_conflict",
+                        "path": f"{rel_dir}/{group[0]}" if rel_dir else group[0],
+                        "reason": "Names differ only by case: " + ", ".join(group),
+                    })
+            if progress:
+                progress(result)
+            if time.monotonic() > deadline or result["files"] >= max_entries:
+                result["complete"] = False
+                break
+        if not result["complete"]:
+            break
+    result["seconds"] = round(time.monotonic() - (deadline - max_seconds), 1)
+    return result
+
+
+def count_dataless(root: str, max_entries: int = 50000, max_seconds: float = 1.5) -> dict:
+    """How much of the sync folder is cloud-only on macOS.
+
+    `stat` on a FileProvider item is cheap, but walking a huge tree can block on a
+    provider that is busy syncing, so the count is bounded in both entries and time
+    and reports whether it stopped early.
+    """
+    result = {"files": 0, "dataless": 0, "scanned": 0, "complete": True}
+    if not platform.is_macos() or not os.path.isdir(root):
+        return result
+    deadline = time.monotonic() + max_seconds
+    for dirpath, _dirnames, filenames in os.walk(root):
+        result["scanned"] += 1
+        for name in filenames:
+            result["files"] += 1
+            try:
+                if os.lstat(os.path.join(dirpath, name)).st_flags & UF_DATAVAULT:
+                    result["dataless"] += 1
+            except OSError:
+                continue
+            if result["files"] >= max_entries or time.monotonic() > deadline:
+                result["complete"] = False
+                return result
+        if time.monotonic() > deadline:
+            result["complete"] = False
+            return result
+    return result
+
+
+def mac_local_attributes(full_path: str, st: os.stat_result) -> dict:
+    """What macOS says about a local file that a Windows-style view would miss.
+
+    * `dataless`: the file is a cloud placeholder - the content is on the server
+      and only the metadata is on disk (the normal state of a FileProvider sync
+      folder). Not an error, but reading the file silently downloads it, so the
+      UI warns before a preview does that.
+    * `compressed`: macOS compressed the file on disk (transparent to readers).
+    * `quarantine`: the file was downloaded by an app and carries Gatekeeper's
+      quarantine flag.
+    * `resource_fork`: an AppleDouble `._*` companion holds macOS metadata that
+      cannot be represented on Windows.
+    """
+    flags = int(getattr(st, "st_flags", 0))
+    attrs: dict = {}
+    if not stat.S_ISDIR(st.st_mode):
+        if flags & UF_DATAVAULT:
+            attrs["dataless"] = True
+        elif flags & UF_COMPRESSED:
+            attrs["compressed"] = True
+    sibling = os.path.join(os.path.dirname(full_path), f"._{os.path.basename(full_path)}")
+    if os.path.lexists(sibling):
+        attrs["resource_fork"] = True
+    xattrs = _xattr_names(full_path)
+    if any(name.startswith("com.apple.quarantine") for name in xattrs):
+        attrs["quarantine"] = True
+    if xattrs:
+        attrs["xattrs"] = xattrs
+    return attrs
 
 
 def remote_side(item: RemoteItem | None) -> FileSide | None:
@@ -257,6 +432,8 @@ def remote_side(item: RemoteItem | None) -> FileSide | None:
 
 
 def _actions_for(kind: str, local: FileSide, remote: FileSide | None, has_remote: bool) -> list[str]:
+    if kind == "mac_trash":
+        return MAC_TRASH_ACTIONS
     if kind in ("junk", "ignored"):
         return JUNK_ACTIONS if has_remote else ["dismiss"]
     if kind == "filename_invalid":
@@ -317,7 +494,9 @@ def collect(
                 continue
             entry.stale = entry.run_id < stale_below
             name = names.basename(rel)
-            if entry.status == "FileIgnored" or names.is_junk_name(name):
+            if names.is_mac_trash_path(rel):
+                kind = "mac_trash"
+            elif entry.status == "FileIgnored" or names.is_junk_name(name):
                 kind = "junk" if names.is_junk_name(name) else "ignored"
             else:
                 kind = STATUS_KIND.get(entry.status, "sync_error")
@@ -334,7 +513,12 @@ def collect(
     if options.include_journal and journal_obj is not None:
         for row in journal_obj.blacklist:
             problems = names.windows_problems(names.basename(row.path), names.local_full_path(local_root, row.path))
-            kind = "filename_invalid" if problems else "sync_error"
+            if names.is_mac_trash_path(row.path):
+                kind = "mac_trash"
+            elif problems:
+                kind = "filename_invalid"
+            else:
+                kind = "sync_error"
             issue = add(row.path, kind, row.errorstring or "The client blacklisted this file",
                         "sync journal", error_status_name(row.errorcategory), 0, row.retrycount)
             issue.details["blacklist"] = {
@@ -356,7 +540,8 @@ def collect(
                 if row.is_dir:
                     continue
                 if names.is_conflict_copy(names.basename(rel)):
-                    add(rel, "conflict", "Conflict copy kept by the client", "sync journal")
+                    # The client made this copy on purpose - it is noise, not a problem.
+                    add(rel, "conflict_copy", "Conflict copy kept by the client", "sync journal")
 
     # --- 3. deep server scan ---------------------------------------------
     if options.deep and deep_results:
@@ -416,7 +601,8 @@ def collect(
 
         issue.actions = _actions_for(issue.kind, issue.local, issue.remote, has_remote)
         if issue.is_dir:
-            issue.actions = [a for a in issue.actions if a in DIR_ALLOWED_ACTIONS] or ["dismiss"]
+            allowed = DIR_ALLOWED_ACTIONS | (set(MAC_TRASH_ACTIONS) if issue.kind == "mac_trash" else set())
+            issue.actions = [a for a in issue.actions if a in allowed] or ["dismiss"]
             issue.details["is_dir"] = True
         if not issue.local.exists and has_remote:
             issue.details["server_only"] = True

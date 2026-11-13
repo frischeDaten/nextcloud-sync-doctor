@@ -12,7 +12,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 
-from . import names
+from . import names, platform
 from .dav import Dav, DavError
 from .state import Store
 
@@ -89,6 +89,22 @@ FILE_ONLY_ACTIONS = {
 }
 
 
+def _invalid_name_message(name: str, problems: list[str], what: str) -> str:
+    """Explain an unusable name, including what it means on a Mac.
+
+    The rules are Windows' own (the client refuses those names everywhere, and they
+    cannot be stored on a Windows machine that shares the folder), so on macOS the
+    message says why a Mac cares at all.
+    """
+    message = f"'{name}' is {what} on Windows: {'; '.join(problems)}"
+    if platform.is_macos():
+        message += (
+            " A Mac can store such a name locally, but a Windows machine sharing the "
+            "folder cannot, so keep names Windows-compatible."
+        )
+    return message
+
+
 def _glob_escape(path: str) -> str:
     """Escape a literal path for the client's gitignore-style exclude file."""
     out = []
@@ -146,11 +162,13 @@ class Resolver:
 
     def _validate_new_name(self, new_name: str, rel_path: str) -> str:
         new_name = new_name.strip().replace("\\", "/").split("/")[-1]
+        if names.is_mac_trash_path(new_name):
+            raise ActionError("A name may not contain a .Trash folder")
         if not new_name:
             raise ActionError("The new name is empty")
         problems = names.windows_problems(new_name)
         if problems:
-            raise ActionError(f"'{new_name}' is still not valid on Windows: {'; '.join(problems)}")
+            raise ActionError(_invalid_name_message(new_name, problems, "still not valid"))
         target_rel = self._rel_with_new_name(rel_path, new_name)
         if target_rel == rel_path:
             raise ActionError("The new name is identical to the current name")
@@ -271,7 +289,7 @@ class Resolver:
             new_name = params.get("new_name") or names.suggest_safe_name(name)
             problems = names.windows_problems(new_name)
             if problems:
-                raise ActionError(f"'{new_name}' is not valid on Windows: {'; '.join(problems)}")
+                raise ActionError(_invalid_name_message(new_name, problems, "not valid"))
             target_rel = self._rel_with_new_name(rel_path, new_name)
             if os.path.exists(self.local_path(target_rel)):
                 raise ActionError(f"'{new_name}' already exists locally")
@@ -430,6 +448,14 @@ class Resolver:
                 if item is not None:
                     details["note"] = "the client will download the server copy again"
                 message = f"Removed the local copy of '{names.basename(rel_path)}'"
+                parent = os.path.dirname(full)
+                if (platform.is_macos() and names.basename(rel_path) != names.MAC_TRASH_NAME
+                        and os.path.basename(parent) == names.MAC_TRASH_NAME
+                        and os.path.isdir(parent) and not os.listdir(parent)):
+                    # The Finder's local trash folder is empty now; it only causes
+                    # sync noise itself, so it goes too (it holds nothing any more).
+                    os.rmdir(parent)
+                    details["removed_empty_trash"] = True
 
             elif action == "restore_version":
                 version = params["version"]

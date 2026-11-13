@@ -3,6 +3,10 @@
 This is the heart of the Mac <-> Windows problem: macOS (and Linux) allow names
 that NTFS/Win32 reject, so files created on a Mac can never be materialised on a
 Windows machine. The desktop client reports them once and otherwise gives up.
+
+The same rules matter on a Mac, which is why this module is platform-neutral: a
+Mac sees Windows-only failures on a shared server as "cannot be downloaded", and
+its own filesystem adds junk and Unicode normalisation quirks of its own.
 """
 
 from __future__ import annotations
@@ -31,8 +35,9 @@ MAX_PATH = 259
 # buries the real problems in the activity list.
 JUNK_PATTERNS = [
     re.compile(r"^\._"),                 # AppleDouble resource forks
-    re.compile(r"^\.DS_Store$", re.I),
-    re.compile(r"^\.ds_store$", re.I),
+    # macOS FileProvider leaves numbered siblings behind ("\.DS_Store 2", ...).
+    re.compile(r"^\.DS_Store(?: \d+)?$", re.I),
+    re.compile(r"^\.ds_store(?: \d+)?$", re.I),
     re.compile(r"^Thumbs\.db$", re.I),
     re.compile(r"^desktop\.ini$", re.I),
     re.compile(r"^\.Spotlight-V100$"),
@@ -65,8 +70,56 @@ CHAR_SUGGESTIONS = {
 }
 
 
+# A local ".Trash" folder is what the macOS Finder creates when it deletes a
+# file on a FileProvider volume: the provider moves it aside instead of removing
+# it, and the client then reports ".Trash/<name> cannot be synced" (usually
+# because the trash item is already deleted on the server, so it can only ever be
+# deleted locally).
+MAC_TRASH_NAME = ".Trash"
+
+
 def is_junk_name(name: str) -> bool:
-    return any(p.search(name) for p in JUNK_PATTERNS)
+    """macOS/Windows filesystem noise, or the client's own conflict copies.
+
+    "x (conflicted copy 2026-11-13).pdf" is not a sync error - the client made it
+    on purpose - but it is noise in the activity list and in this list, so it is
+    classified with the junk rather than with the real problems.
+    """
+    return any(p.search(name) for p in JUNK_PATTERNS) or is_conflict_copy(name)
+
+
+# Folders the client's own default ignore rules skip (and that a user commonly adds
+# to .sync-exclude.lst, as the README of many projects suggests). Walking them makes
+# a local check slow for no benefit: their files never reach the server.
+IGNORED_DIR_NAMES = {
+    "venv", ".venv", "node_modules", "__pycache__", ".git", ".hg", ".svn",
+    ".tox", ".nox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+}
+IGNORED_DIR_SUFFIXES = (".egg-info",)
+
+
+def is_ignored_dir_name(name: str) -> bool:
+    return name.lower() in IGNORED_DIR_NAMES or name.lower().endswith(IGNORED_DIR_SUFFIXES)
+
+
+def is_mac_trash_path(rel_path: str) -> bool:
+    """True for anything below a local `.Trash` folder inside the sync folder."""
+    return any(part == MAC_TRASH_NAME for part in rel_path.replace("\\", "/").split("/"))
+
+
+def nfc(value: str) -> str:
+    """Canonical Unicode form.
+
+    macOS stores names decomposed (NFD, "Mueller" written as "Mu" + combining
+    umlaut), while the server and Windows normally hold them composed (NFC).
+    Comparing raw strings would report identical names as different.
+    """
+    import unicodedata
+
+    try:
+        return unicodedata.normalize("NFC", value)
+    except (TypeError, ValueError):
+        return value
 
 
 def is_conflict_copy(name: str) -> bool:
@@ -139,10 +192,14 @@ def suggest_safe_name(name: str, taken: set[str] | None = None) -> str:
 
 
 def case_collisions(names: list[str]) -> list[list[str]]:
-    """Group names that differ only by case - fatal for Windows, fine elsewhere."""
+    """Group names that differ only by case - fatal for Windows, fine elsewhere.
+
+    Names are compared in NFC form, so a decomposed macOS spelling of the same
+    name counts as a collision instead of hiding behind a different byte string.
+    """
     buckets: dict[str, list[str]] = {}
     for name in names:
-        buckets.setdefault(name.lower(), []).append(name)
+        buckets.setdefault(nfc(name).lower(), []).append(name)
     return [sorted(v) for v in buckets.values() if len(v) > 1]
 
 

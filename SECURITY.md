@@ -12,16 +12,25 @@ The doctor needs to talk to your Nextcloud server to show you the server side of
 problem. It obtains a token in one of two ways:
 
 1. **Reuse (default).** It reads the app password that the Nextcloud desktop client
-   already stored in the Windows Credential Manager
-   (`Nextcloud_<user>_app-password:<url>:<id>`). The entry is opened read-only; it is never
-   modified, rotated or deleted. Only the same Windows user can read it.
+   already stored:
+
+   * **Windows:** the Credential Manager entry `Nextcloud_<user>_app-password:<url>:<id>`,
+     opened read-only; it is never modified, rotated or deleted.
+   * **macOS:** the login keychain item with service `Nextcloud` and account
+     `<user>_app-password:<url>[:<id>]`, read through `/usr/bin/security`. macOS asks once
+     before a terminal app may read it (*Always Allow* makes it silent). The doctor finds
+     the right item by reading the keychain's non-secret attribute table, so locating an
+     account never prompts — only reading the secret does.
+
+   The credential is never modified or deleted on either platform.
 2. **Explicit.** `--password <app-password>` (create one in Nextcloud → *Settings* →
    *Security* → *App passwords*). Nothing is read from the credential store.
 
 Consequences worth knowing:
 
 * The token is used for HTTP Basic authentication against the server configured in
-  `%APPDATA%\Nextcloud\nextcloud.cfg`. It is sent nowhere else.
+  `nextcloud.cfg` (see "Where things live" in the README for each platform). It is sent
+  nowhere else.
 * The token is held in memory for the lifetime of the process. It is **not** written to
   disk, to logs, or to the audit trail.
 * If you do not want a tool to read the client's stored credential, use `--password`, or
@@ -41,8 +50,8 @@ All changes to your files or server are user-initiated from the UI or CLI. To ma
 recoverable:
 
 * the sync journal is copied and opened **read-only**; it is never written,
-* local files are copied to `%LOCALAPPDATA%\Nextcloud\sync-doctor\backups\` before being
-  overwritten or removed,
+* local files are copied to the doctor's `backups` folder before being overwritten or
+  removed (see "Where things live" in the README),
 * the previous server version is downloaded to that backup folder before a server
   overwrite,
 * server deletions go through Nextcloud, i.e. into the server's trash bin,

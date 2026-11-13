@@ -19,7 +19,9 @@ logic, and it is what the screenshots in the README are made with.
 
 ## With a real account
 
-Requirements: Windows with the Nextcloud desktop client configured, Python 3.10+.
+Requirements: Windows or macOS with the Nextcloud desktop client configured, Python 3.10+.
+On macOS the client is sandboxed: grant Full Disk Access to your terminal (see the README)
+or use `--config`/`--password`.
 
 ```bash
 python -m ncsd scan --json          # what does detection see?
@@ -35,8 +37,9 @@ folder rather than at real data.
 
 | File | Responsibility |
 |---|---|
+| `ncsd/platform.py` | every OS-specific path and rule (Windows, macOS); add new ones here |
 | `ncsd/config.py` | read `nextcloud.cfg`, locate journal/logs, data dir |
-| `ncsd/creds.py` | read the client's app password from Windows Credential Manager |
+| `ncsd/creds.py` | read the client's app password (Windows Credential Manager, macOS keychain) |
 | `ncsd/journal.py` | snapshot and query the sync journal (read-only) |
 | `ncsd/dav.py` | minimal WebDAV client (PROPFIND, GET, PUT, MOVE, DELETE, versions) |
 | `ncsd/names.py` | Windows filename rules — mirrors `csync_exclude.cpp` |
@@ -45,6 +48,8 @@ folder rather than at real data.
 | `ncsd/state.py` | dismissals, audit trail, backups |
 | `ncsd/webui.py` + `ncsd/static/` | local HTTP server and the browser UI |
 | `ncsd/demo.py` | synthetic fixtures for `--demo` |
+| `tests/` | platform tests, `python -m unittest discover -s tests` |
+| `tools/macos-diagnostics.sh` | read-only macOS probe: where the client keeps config, logs and FileProvider domain data (redacted) |
 
 ## Ground rules
 

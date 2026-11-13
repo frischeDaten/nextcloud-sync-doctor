@@ -106,8 +106,11 @@ It is deliberately *not* a replacement for the client: it is the missing resolut
 
 * Touch: `populateAccountMenu()` (`src/gui/trayaccountpopup_qt.cpp:762‑771`) — call
   `Systray::createResolveConflictsDialog()` instead of `openActivitiesForUser()` when the
-  alert is caused by conflicts; the macOS equivalent is `NCAlertBoxRow`
-  (`src/gui/macOS/trayaccountpopup/ncalertboxrow.mm:40`) →
+  alert is caused by conflicts. The macOS tray menu is an `NSMenu`, not that Qt menu, so
+  it needs the same branch: the "Resolve" row is built in `nctraypopup.mm` (the action
+  around `222‑233`) and the alert row that carries it in `NCAlertBoxRow`
+  (`src/gui/macOS/trayaccountpopup/ncalertboxrow.mm:40`); without it, macOS users get the
+  activity list too →
   `nctraypopup.mm:222‑233`.
 * Needs `User::buildAccountAlert()` to expose *why* the alert fired (conflicts vs generic
   errors) so the menu can branch — one extra role in the `QVariantMap`.
@@ -151,6 +154,31 @@ It is deliberately *not* a replacement for the client: it is the missing resolut
   `cmake -S . -B build -DNEXTCLOUD_DEV=ON`; CI job
   `.github/workflows/windows-build-and-test.yml`.
 * AI-assisted contributions must be disclosed in the PR (see CONTRIBUTING.md rules).
+
+### 4.6 macOS-specific failures (relevant to option 5)
+
+The Mac client adds failure modes that Windows does not have. They belong in the same
+"sync issues" model as the Windows name rules:
+
+* **Finder deletions in a FileProvider folder.** Deleting a file in Finder on a
+  `~/Library/CloudStorage/…` Nextcloud folder leaves a local `.Trash/<name>` item; the
+  server copy is usually deleted already, so the item can only ever fail with
+  "not found in local storage" until it is removed locally. Upstream: the FileProvider
+  extension should drop the trash item once the delete is confirmed (or the client should
+  recognise `.Trash` as its own and clean it).
+* **Cloud placeholders.** A FileProvider item is "dataless" (`UF_DATAVAULT`) until opened.
+  Anything that reads the file (a preview, a hash, an editor) silently downloads it, which
+  is a sync action the user did not ask for. A proper UI should say so before it happens.
+* **iCloud Drive.** A Nextcloud sync folder inside `~/Library/Mobile Documents` is managed
+  by two providers; each renames and re-creates files the other holds open. This produces
+  conflicts neither client can explain and should be detected and refused at setup.
+* **Unicode normalisation.** macOS stores names decomposed (NFD); the server and Windows
+  use composed (NFC). Any name comparison upstream (case clashes, ignore rules, conflict
+  detection) must normalise first, or the same name looks like two different files.
+* **Sandboxed data.** The sandboxed client's config, log and journal live in
+  `~/Library/Containers/com.nextcloud.desktopclient/Data`, readable only by the client
+  itself or by processes with Full Disk Access. A "report a problem" feature that needs
+  those files has to export them from inside the client.
 
 ---
 

@@ -13,6 +13,8 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
+from . import platform
+
 SNAPSHOT_PREFIX = "journal-"
 
 
@@ -101,10 +103,26 @@ class Journal:
         return self.rows.get(rel_path)
 
 
+def journal_unavailable_reason(db_path: str) -> str:
+    """Why the journal could not be used, in words a user can act on."""
+    if not db_path:
+        return "The client did not record a sync journal for this folder."
+    if os.path.exists(db_path):
+        return f"Sync journal exists but cannot be read: {db_path}"
+    if platform.is_macos():
+        return (
+            f"No readable sync journal for this folder ({db_path}). A macOS FileProvider "
+            "sync folder keeps its journal in a protected system directory; reading it "
+            "needs Full Disk Access (System Settings > Privacy & Security). Without the "
+            "journal the doctor still works from the client's log and a deep server scan."
+        )
+    return f"Sync journal not found: {db_path}"
+
+
 def snapshot(db_path: str, dest_dir: str) -> str:
     """Copy db + wal + shm so we never touch the live database."""
-    if not os.path.isfile(db_path):
-        raise JournalError(f"Sync journal not found: {db_path}")
+    if not db_path or not os.path.isfile(db_path):
+        raise JournalError(journal_unavailable_reason(db_path))
     os.makedirs(dest_dir, exist_ok=True)
     stamp = f"{SNAPSHOT_PREFIX}{int(time.time()*1000)}"
     base = os.path.join(dest_dir, stamp + ".db")

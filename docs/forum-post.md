@@ -8,6 +8,11 @@ category is for support questions and explicitly says support questions are dele
 **Before posting:** tick the template question "I have no support/technical question and
 have seen the support category." Choose the tag that best fits if the form asks for one.
 
+**Status:** posted on 2026-11-13 as the account `frischedaten` (signed in via GitHub). It is
+queued as *Post Needs Approval* because the account is new, so a moderator has to release
+it before it appears in the category. The text as submitted is in
+[forum-post-ready.txt](forum-post-ready.txt) (plain text, no em dashes).
+
 ---
 
 ## Title

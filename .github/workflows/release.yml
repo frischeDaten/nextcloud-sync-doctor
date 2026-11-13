@@ -57,22 +57,34 @@ jobs:
           python -m ncsd --demo scan
           test -f "Nextcloud Sync Doctor.cmd"
           test -f "Nextcloud Sync Doctor.command"
-          test -x "Nextcloud Sync Doctor.command"
           test -f ncsd/static/index.html
           test -f ncsd/static/app.js
+          echo "bundle contents ok"
 
-      - name: Run this platform's launcher
+      - name: Run the macOS launcher from the unpacked ZIP
+        if: matrix.platform == 'macos'
         shell: bash
         run: |
           set -euo pipefail
           BUNDLE="$(ls -d dist/unpacked/nextcloud-sync-doctor-*/ | head -1)"
           cd "$BUNDLE"
-          if [ "${{ matrix.platform }}" = macos ]; then
-            ./"Nextcloud Sync Doctor.command" --demo scan | tee launcher.txt
-          else
-            cmd.exe //c '"Nextcloud Sync Doctor.cmd" --demo scan' | tee launcher.txt
-          fi
+          # unzip keeps the executable bit, like Finder; verify that and run it.
+          test -x "Nextcloud Sync Doctor.command"
+          ./"Nextcloud Sync Doctor.command" --demo scan | tee launcher.txt
           grep -q 'real problem(s)' launcher.txt
+
+      - name: Run the Windows launcher from the unpacked ZIP
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: |
+          rem errorlevel inside a ( ) block is evaluated when the block is parsed,
+          rem so each command is guarded on its own line.
+          for /d %%D in (dist\unpacked\nextcloud-sync-doctor-*) do (
+            cd "%%~fD"
+            "Nextcloud Sync Doctor.cmd" --demo scan > launcher.txt || exit /b 1
+            findstr /c:"real problem(s)" launcher.txt >nul || exit /b 1
+            echo launcher ok
+          )
 
       - name: Name the ZIP for this platform
         shell: bash

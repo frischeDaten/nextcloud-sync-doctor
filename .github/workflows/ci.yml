@@ -73,4 +73,6 @@ jobs:
           bash -n "Nextcloud Sync Doctor.command"
 
       - name: Demo scan through the launcher
-        run: ./"Nextcloud Sync Doctor.command" --demo scan --no-browser
+        # --no-browser belongs to "serve"; a subcommand is passed through, so keep
+        # this to options the "scan" subcommand accepts.
+        run: ./"Nextcloud Sync Doctor.command" --demo scan

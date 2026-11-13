@@ -121,14 +121,17 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            TAG="${{ inputs.tag }}"
+          if [ "$EVENT" = workflow_dispatch ]; then
+            TAG="$TAG_INPUT"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
           VERSION="${TAG#v}"
+          export VERSION WIN_SIZE MAC_SIZE WIN_SHA MAC_SHA CHANGES GITHUB_REPOSITORY
           WIN_ZIP="dist/nextcloud-sync-doctor-${VERSION}.zip"
           MAC_ZIP="dist/nextcloud-sync-doctor-${VERSION}-macos.zip"
           test -f "$WIN_ZIP"
@@ -145,7 +148,7 @@ jobs:
             CHANGES="$(git log --oneline "${TAG}")"
           fi
 
-          cat > notes.md <<EOF
+          cat > notes.md <<'EOF'
           ## Download
 
           Pick the ZIP for your system - no Git needed. Both contain the same program;
@@ -205,6 +208,9 @@ jobs:
           ${CHANGES}
           ```
           EOF
+
+          envsubst '${VERSION} ${WIN_SIZE} ${MAC_SIZE} ${WIN_SHA} ${MAC_SHA} ${CHANGES} ${GITHUB_REPOSITORY}' < notes.md > notes.final
+          mv notes.final notes.md
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists, replacing the assets"

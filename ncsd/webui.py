@@ -19,7 +19,7 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, config, creds, detect, journal as journal_mod, names
+from . import __version__, config, creds, detect, journal as journal_mod, names, platform
 from .actions import ACTION_LABELS, ActionError, Resolver
 from .dav import Dav, DavError
 from .model import KINDS, preview_kind
@@ -50,6 +50,7 @@ class Session:
         self.resolver = Resolver(account, folder, dav, store)
         self.issues = []
         self.journal_obj = None
+        self.journal_error = ""
         self.lock = threading.Lock()
         self.deep_state = detect.DeepScanState()
         self.deep_results: list[dict] = []
@@ -63,9 +64,11 @@ class Session:
             self.journal_obj = journal_mod.load(
                 self.folder.journal_path, os.path.join(self.store.data_dir, "snapshots")
             )
+            self.journal_error = ""
             journal_mod.cleanup_snapshots(os.path.join(self.store.data_dir, "snapshots"))
-        except journal_mod.JournalError:
+        except journal_mod.JournalError as exc:
             self.journal_obj = None
+            self.journal_error = str(exc)
 
     def scan(self, include_junk: bool | None = None, use_deep: bool = False) -> list:
         settings = self.store.settings
@@ -92,9 +95,16 @@ class Session:
             return False
         state = detect.DeepScanState()
         self.deep_state = state
-        journal_obj = self.journal_obj or journal_mod.load(
-            self.folder.journal_path, os.path.join(self.store.data_dir, "snapshots")
-        )
+        if self.journal_obj is not None:
+            journal_obj = self.journal_obj
+        else:
+            try:
+                journal_obj = journal_mod.load(
+                    self.folder.journal_path, os.path.join(self.store.data_dir, "snapshots")
+                )
+            except journal_mod.JournalError:
+                # The crawl can still work from the sync folder itself.
+                journal_obj = None
 
         def run():
             try:
@@ -122,40 +132,137 @@ class Session:
         return self.resolver.local_path(rel_path)
 
 
-def _client_running() -> bool:
+MAC_CLOUD_STORAGE = os.path.expanduser("~/Library/CloudStorage")
+
+
+def _folder_platform_facts(folder) -> dict:
+    """What the platform adds to the picture of the sync folder (empty elsewhere)."""
+    facts: dict = {"platform": platform.platform_name()}
+    if not platform.is_macos():
+        return facts
+    root = os.path.abspath(folder.local_root)
+    # FileProvider domains live in ~/Library/CloudStorage; iCloud Drive is one too.
+    facts["fileprovider"] = root.startswith(MAC_CLOUD_STORAGE + os.sep)
+    facts["icloud"] = "/Library/Mobile Documents/" in root
+    facts["dataless"] = detect.count_dataless(root)
+    return facts
+
+
+def _client_pids() -> list[int]:
+    """Process ids of the running desktop client (and its FileProvider extension).
+
+    Candidates are found by process name (`pgrep -x`), then confirmed by the
+    executable path, so a shell whose command line merely mentions "Nextcloud"
+    never counts as the client.
+    """
+    names = platform.client_process_names()
+    if platform.is_macos():
+        names.append(platform.mac_fileprovider_extension_name())
+    pids: list[int] = []
+    for name in names:
+        try:
+            out = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in (out.stdout or "").splitlines():
+            try:
+                pid = int(line.strip())
+            except ValueError:
+                continue
+            if pid in pids or not _pid_is_client(pid):
+                continue
+            pids.append(pid)
+    return pids
+
+
+def _pid_is_client(pid: int) -> bool:
+    if not platform.is_macos():
+        return True
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq nextcloud.exe", "/NH"],
-            capture_output=True, text=True, timeout=15,
-        )
-        return "nextcloud.exe" in (out.stdout or "").lower()
+        out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return False
+    return "Nextcloud.app" in (out.stdout or "")
+
+
+def _client_running() -> bool:
+    if platform.is_windows():
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq nextcloud.exe", "/NH"],
+                capture_output=True, text=True, timeout=15,
+            )
+            return "nextcloud.exe" in (out.stdout or "").lower()
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return bool(_client_pids())
 
 
 def _quit_client() -> tuple[bool, str]:
     if not _client_running():
         return True, "The desktop client is not running."
-    try:
-        subprocess.run(["taskkill", "/IM", "nextcloud.exe", "/T"], capture_output=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    for _ in range(10):
-        time.sleep(0.5)
-        if not _client_running():
-            return True, "Desktop client stopped."
-    try:
-        subprocess.run(["taskkill", "/F", "/IM", "nextcloud.exe", "/T"], capture_output=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return False, "Could not stop the desktop client."
+    if platform.is_windows():
+        try:
+            subprocess.run(["taskkill", "/IM", "nextcloud.exe", "/T"], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        for _ in range(10):
+            time.sleep(0.5)
+            if not _client_running():
+                return True, "Desktop client stopped."
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "nextcloud.exe", "/T"], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return False, "Could not stop the desktop client."
+        time.sleep(1.0)
+        return (not _client_running()), "Desktop client force-stopped."
+
+    # macOS (and other POSIX systems): ask the app to quit, then insist.
+    if platform.is_macos():
+        try:
+            subprocess.run(["osascript", "-e", 'quit app "Nextcloud"'], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        for _ in range(10):
+            time.sleep(0.5)
+            if not _client_running():
+                return True, "Desktop client quit."
+    for pid in _client_pids():
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
     time.sleep(1.0)
+    if not _client_running():
+        return True, "Desktop client stopped."
+    for pid in _client_pids():
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+    time.sleep(0.5)
     return (not _client_running()), "Desktop client force-stopped."
 
 
 def _start_client() -> tuple[bool, str]:
-    exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Nextcloud", "nextcloud.exe")
-    if not os.path.isfile(exe):
-        return False, "nextcloud.exe not found in Program Files."
+    exe = platform.client_executable()
+    if platform.is_macos():
+        if not exe:
+            return False, "Nextcloud.app not found in /Applications or ~/Applications."
+        # "open" hands the launch to launchd, so the app starts exactly as from Finder.
+        try:
+            subprocess.run(["open", "-a", exe], capture_output=True, timeout=20, check=False)
+            return True, "Desktop client started."
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"Could not start the client: {exc}"
+    if platform.is_windows():
+        if not os.path.isfile(exe):
+            return False, "nextcloud.exe not found in Program Files."
+        try:
+            subprocess.Popen([exe], close_fds=True)
+            return True, "Desktop client started."
+        except OSError as exc:
+            return False, f"Could not start the client: {exc}"
     try:
         subprocess.Popen([exe], close_fds=True)
         return True, "Desktop client started."
@@ -250,6 +357,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._bootstrap()
         if path == "/api/scan" and method == "POST":
             return self._scan()
+        if path == "/api/localcheck" and method == "POST":
+            return self._local_check()
         if path == "/api/deepscan":
             if method == "POST":
                 body = self._body()
@@ -331,9 +440,8 @@ class Handler(BaseHTTPRequestHandler):
         if session.journal_obj is not None:
             last_sync = session.journal_obj.last_sync
             journal_entries = len(session.journal_obj.rows)
-        # In demo mode never expose a real path (the store really lives in %TEMP%).
-        data_dir = (r"C:\Users\alex\AppData\Local\Nextcloud\sync-doctor" if is_demo
-                    else session.store.data_dir)
+        # In demo mode never expose a real path (the store really lives in a temp folder).
+        data_dir = platform.demo_data_dir_hint() if is_demo else session.store.data_dir
         return self._json({
             "app": "Nextcloud Sync Doctor",
             "version": __version__,
@@ -352,6 +460,10 @@ class Handler(BaseHTTPRequestHandler):
                 "journal_entries": journal_entries,
                 "virtual_files": folder.virtual_files_mode,
                 "paused": folder.paused,
+                "journal_error": session.journal_error,
+                "note": folder.note,
+                "source": folder.source,
+                "platform": {} if is_demo else _folder_platform_facts(folder),
             },
             "client": {
                 "config_version": session.cfg.client_version,
@@ -369,6 +481,41 @@ class Handler(BaseHTTPRequestHandler):
                 "results": len(session.deep_results),
             },
         })
+
+    def _local_check(self):
+        """Walk the folder and check names against the client's rules (no server needed)."""
+        session = self.session
+        if getattr(session, "demo", False):
+            raise HttpError("Demo mode: the files are fictional.", 400)
+        body = self._body()
+        root = session.folder.local_root
+        roots = [root]
+        skipped: list[str] = []
+        if not body.get("all"):
+            try:
+                entries = sorted(os.listdir(root))
+            except OSError as exc:
+                raise HttpError(f"Cannot list the sync folder: {exc.strerror or exc}", 403) from None
+            roots = []
+            for name in entries:
+                path = os.path.join(root, name)
+                if os.path.isdir(path):
+                    if name.lower() in platform.CHECK_DEFAULT_SKIP:
+                        skipped.append(name)
+                        continue
+                    roots.append(path)
+        timeout = min(float(body.get("timeout") or 120), 600)
+        state = detect.local_name_problems(roots, max_seconds=timeout, base=root)
+        for problem in state["problems"]:
+            problem["label"] = KINDS.get(problem["kind"], {}).get("label", problem["kind"])
+            actions = detect._actions_for(
+                problem["kind"], detect.FileSide(exists=True), None, has_remote=False
+            )
+            if problem["kind"] == "filename_invalid" and "rename_local" not in actions:
+                # A bad local name is fixed by renaming the file locally.
+                actions.insert(0, "rename_local")
+            problem["actions"] = actions
+        return self._json({"state": state, "skipped": skipped, "timeout": timeout})
 
     def _scan(self):
         body = self._body()
@@ -459,13 +606,21 @@ class Handler(BaseHTTPRequestHandler):
     def _preview(self, query: dict):
         rel = query.get("path", [""])[0]
         item = self.session.dav.stat(rel)
-        local_exists = os.path.exists(self.session.local_path(rel))
+        full = self.session.local_path(rel)
+        local_exists = os.path.exists(full)
+        hint = ""
+        if local_exists and platform.is_macos():
+            st = os.lstat(full)
+            if not os.path.isdir(full) and (st.st_flags & detect.UF_DATAVAULT):
+                hint = ("This file is not downloaded yet (a cloud placeholder). Opening the "
+                        "preview downloads it into the sync folder.")
         return self._json({
             "path": rel,
             "name": names.basename(rel),
             "local_exists": local_exists,
             "remote": item.to_dict() if item else None,
             "kind": preview_kind(names.basename(rel)),
+            "hint": hint,
         })
 
     def _raw(self, query: dict):
@@ -531,8 +686,10 @@ class Handler(BaseHTTPRequestHandler):
             full = self.session.local_path(rel)
             if not os.path.exists(full):
                 raise HttpError("Local file does not exist", 404)
-            subprocess.Popen(["explorer", "/select,", os.path.normpath(full)])
-            return self._json({"ok": True, "message": "Opened the containing folder."})
+            subprocess.Popen(platform.reveal_command(full), close_fds=True)
+            message = ("Revealed in Finder." if platform.is_macos()
+                       else "Opened the containing folder.")
+            return self._json({"ok": True, "message": message})
         item = self.session.dav.stat(rel) if rel else None
         parent = names.parent_rel(rel) if rel else ""
         base = self.session.account.base_url
@@ -554,7 +711,8 @@ def _free_port(preferred: int) -> int:
 
 
 def serve(account_index: int = 0, folder_index: int = 0, port: int = 0,
-          open_browser: bool = True, password: str | None = None, demo: bool = False) -> int:
+          open_browser: bool = True, password: str | None = None, demo: bool = False,
+          config_path: str | None = None) -> int:
     if demo:
         from . import demo as demo_module
 
@@ -562,7 +720,7 @@ def serve(account_index: int = 0, folder_index: int = 0, port: int = 0,
     else:
         from .cli import build_session  # local import avoids a cycle
 
-        cfg, account, folder, dav = build_session(account_index, folder_index, password)
+        cfg, account, folder, dav = build_session(account_index, folder_index, password, config_path)
         store = Store()
 
         # Fail fast with a readable message instead of a broken UI.

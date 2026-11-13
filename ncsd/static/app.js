@@ -10,6 +10,9 @@ const el = (tag, cls, html) => {
   return node;
 };
 
+// The doctor runs on Windows and macOS; the backend reports which one in /api/bootstrap.
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || '');
+
 const state = {
   boot: null,
   issues: [],
@@ -33,7 +36,7 @@ const ACTION_META = {
   upload_local: { label: 'Upload', cls: 'primary', group: 'main' },
   delete_remote: { label: 'Delete on server', cls: 'danger', group: 'danger' },
   delete_local: { label: 'Delete local', cls: 'danger', group: 'danger' },
-  open_local: { label: 'Show in Explorer', cls: 'ghost', group: 'misc' },
+  open_local: { label: IS_MAC ? 'Show in Finder' : 'Show in Explorer', cls: 'ghost', group: 'misc' },
   open_remote: { label: 'Open in Nextcloud', cls: 'ghost', group: 'misc' },
   ignore: { label: 'Ignore file', cls: 'ghost', group: 'misc' },
   dismiss: { label: 'Hide', cls: 'ghost', group: 'misc' },
@@ -177,8 +180,41 @@ async function boot() {
   $('#footer-dirs').innerHTML =
     `backups: <code>${esc(b.backups_dir)}</code>`;
 
+  renderPlatformBanner(b);
   if (b.deep.running) startDeepPolling();
   await scan({ deep: false });
+}
+
+/* -------------------------------------------------------- platform banner */
+function renderPlatformBanner(b) {
+  const banner = $('#platformbanner');
+  const p = b.folder.platform || {};
+  const lines = [];
+  if (b.folder.note) lines.push(esc(b.folder.note));
+  if (p.fileprovider) {
+    lines.push('<b>FileProvider sync folder.</b> The macOS client manages this folder through ' +
+      "the system's FileProvider, so its sync journal lives in a protected system directory and " +
+      'the classic "sync folder" files (journal, .sync-exclude.lst) are not where Windows puts them.');
+  }
+  if (p.icloud) {
+    lines.push('<b>iCloud Drive folder.</b> A Nextcloud sync folder inside iCloud Drive is managed ' +
+      'by two sync services at once. Both of them rename, delete and re-create files, which produces ' +
+      'conflicts that neither client can explain. Move the folder out of iCloud Drive.');
+  }
+  if (p.dataless && p.dataless.dataless > 0) {
+    const d = p.dataless;
+    lines.push(`<b>${d.dataless.toLocaleString()} of ${d.files.toLocaleString()} files are not downloaded` +
+      ' (cloud placeholders). This is normal for a FileProvider folder; a preview downloads the file ' +
+      'into the sync folder first.' + (d.complete ? '' : ' (count stopped early)'));
+  }
+  if (b.folder.journal_error) {
+    lines.push(esc(b.folder.journal_error));
+  }
+  if (!lines.length) { banner.hidden = true; return; }
+  banner.innerHTML = `<div class="platformbanner-text">${lines.map((l) => `<p>${l}</p>`).join('')}</div>
+    <button class="btn small ghost" data-dismiss-banner>Hide</button>`;
+  banner.hidden = false;
+  banner.querySelector('[data-dismiss-banner]').onclick = () => { banner.hidden = true; };
 }
 
 /* ------------------------------------------------------------------- scan */
@@ -290,11 +326,100 @@ const RESOLVED_INFO = {
   blurb: 'The client reported these earlier, but nothing is left to fix: the files are gone from both sides or were renamed.',
 };
 
+function renderEmptyDetail() {
+  const b = state.boot || {};
+  const p = (b.folder && b.folder.platform) || {};
+  const sources = [];
+  sources.push('the client\'s log (errors it reported recently)');
+  sources.push(b.folder && b.folder.journal_entries
+    ? `the sync journal (${b.folder.journal_entries.toLocaleString()} entries)`
+    : '<b>not</b> the sync journal (it is unavailable on this Mac)');
+  sources.push(b.deep && b.deep.results
+    ? `a deep server scan (${b.deep.results} finding(s))`
+    : '<b>not</b> a deep server scan');
+  const lines = [
+    `Checked: ${sources.join(', ')}.`,
+    'An empty list means the doctor found nothing <em>right now</em>; an issue that was fixed '
+      + 'stays fixed, and log lines about it are not repeated.',
+  ];
+  if (!(b.deep && b.deep.results)) {
+    lines.push('<b>Run <em>Deep scan</em></b> to crawl the server itself for names and paths '
+      + 'Windows cannot store, files the client skipped once and never mentioned again, '
+      + 'and case clashes. It needs no journal and no log.');
+  }
+  if (state.junk) {
+    lines.push('Junk/noise is switched on, so `._*`, `.DS_Store` and Finder-trash leftovers '
+      + 'would be listed above if they existed.');
+  } else {
+    lines.push('Switch on <em>Show junk/noise</em> to include `._*`, `.DS_Store` copies and '
+      + 'leftovers in the folder\'s `.Trash` folder.');
+  }
+  if (p.dataless && p.dataless.dataless > 0) {
+    lines.push(`${p.dataless.dataless.toLocaleString()} of ${p.dataless.files.toLocaleString()} files `
+      + 'are not downloaded (cloud placeholders). They are still checked by name and by metadata.');
+  }
+  if (b.folder && b.folder.journal_error) lines.push(esc(b.folder.journal_error));
+  lines.push('<div class="actions"><button class="btn small primary" id="btn-localcheck">'
+    + 'Check the folder itself</button></div>');
+  $('#empty-detail').innerHTML = lines.map((l) => `<p>${l}</p>`).join('');
+  const btn = $('#btn-localcheck');
+  if (btn) btn.onclick = () => runLocalCheck();
+}
+
+/* ------------------------------------------------------- local folder check */
+async function runLocalCheck() {
+  const btn = $('#btn-localcheck');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> checking…'; }
+  const lines = ['Walking the sync folder and checking every name against the client\'s rules '
+    + '(no server needed). A cloud folder costs about a second per directory, so this can take a minute.'];
+  $('#empty-detail').innerHTML = lines.map((l) => `<p>${l}</p>`).join('');
+  try {
+    const data = await api('/api/localcheck', { method: 'POST', body: { timeout: 180 } });
+    const s = data.state;
+    const out = [];
+    out.push(`Checked ${s.dirs.toLocaleString()} folder(s), ${s.files.toLocaleString()} file(s) in `
+      + `${s.seconds.toFixed(0)}s` + (s.complete ? '.' : ' (stopped at the time limit).'));
+    if (data.skipped && data.skipped.length) {
+      out.push(`Skipped large folder(s): ${data.skipped.map(esc).join(', ')}.`);
+    }
+    if (!s.problems.length) {
+      out.push('No local name problems: every file name here can be stored on Windows.');
+      $('#empty-detail').innerHTML = out.map((l) => `<p>${l}</p>`).join('');
+      return;
+    }
+    const counts = {};
+    for (const p of s.problems) counts[p.label] = (counts[p.label] || 0) + 1;
+    out.push(`${s.problems.length.toLocaleString()} problem(s): `
+      + Object.entries(counts).map(([k, v]) => `${esc(k)} ${v}`).join(', ') + '.');
+    const rows = s.problems.slice(0, 400).map((p) => {
+      const actions = p.actions.filter((a) => ['rename_local', 'delete_local', 'open_local', 'ignore', 'dismiss'].includes(a));
+      return `<div class="localrow"><div><b>${esc(p.path)}</b>
+        <div class="dim">${esc(p.label)}${p.reason ? ' — ' + esc(p.reason) : ''}</div></div>
+        <div class="actions">${actions.map((a) => `<button class="btn small ghost" data-act="${a}" data-path="${esc(p.path)}" data-key="${esc(p.kind + ':' + p.path)}">${esc((ACTION_META[a] || {}).label || a)}</button>`).join('')}</div></div>`;
+    }).join('');
+    if (s.problems.length > 400) out.push(`Showing the first 400 of ${s.problems.length}.`);
+    $('#empty-detail').innerHTML = out.map((l) => `<p>${l}</p>`).join('') + `<div class="localrows">${rows}</div>`;
+    for (const b of document.querySelectorAll('#empty-detail [data-act]')) {
+      b.onclick = (event) => {
+        event.stopPropagation();
+        const pseudo = { path: b.dataset.path, key: b.dataset.key, title: b.dataset.path.split('/').pop() };
+        if (b.dataset.act === 'dismiss') return dismissIssue(pseudo);
+        if (b.dataset.act === 'open_local') return openSide(pseudo, 'open_local');
+        return runAction(pseudo, b.dataset.act, {});
+      };
+    }
+  } catch (err) {
+    $('#empty-detail').innerHTML = `<p class="err">${esc(err.message)}</p>`;
+    if (btn) { btn.disabled = false; btn.textContent = 'Check the folder itself'; }
+  }
+}
+
 function renderIssues() {
   const list = $('#issues');
   list.innerHTML = '';
   const issues = visibleIssues();
   $('#empty').hidden = issues.length > 0;
+  if (!issues.length) renderEmptyDetail();
 
   if (state.filterKind === 'resolved') {
     const group = el('div', 'group');
@@ -414,11 +539,21 @@ function sideBlock(issue, side) {
       if (data.checksums) metaRows.push(['checksum', `<code>${esc(data.checksums)}</code>`]);
       if (data.permissions) metaRows.push(['permissions', `<code>${esc(data.permissions)}</code>`]);
     }
+    if (side === 'local' && data.attributes) {
+      // macOS-only facts (see ncsd/detect.py: mac_local_attributes).
+      const a = data.attributes;
+      if (a.dataless) metaRows.push(['macOS', 'not downloaded (cloud placeholder)']);
+      if (a.compressed) metaRows.push(['macOS', 'compressed on disk']);
+      if (a.quarantine) metaRows.push(['macOS', 'quarantined (Gatekeeper)']);
+      if (a.resource_fork) metaRows.push(['macOS', '<code>._</code> metadata sidecar present']);
+    }
   }
   const meta = exists
     ? `<div class="meta">${metaRows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('')}</div>`
     : `<div class="absent-note">${side === 'local'
-      ? 'Not present locally — Windows cannot create this name, or the file was never downloaded.'
+      ? (IS_MAC
+        ? 'Not present locally — the file was never downloaded, or it was deleted or moved in Finder.'
+        : 'Not present locally — Windows cannot create this name, or the file was never downloaded.')
       : 'Not present on the server.'}</div>`;
   const preview = exists && !isDir
     ? `<div class="preview" data-side="${side}"></div>`
@@ -642,7 +777,8 @@ async function runAction(issue, action, params) {
   const nameField = NEEDS_NAME.has(action)
     ? `<label>New file name</label>
        <input type="text" id="modal-name" value="${esc(plan.params.new_name || '')}" spellcheck="false">
-       <div class="dim" style="margin-top:6px;font-size:12px">Characters Windows cannot store are replaced automatically in the suggestion.</div>`
+       <div class="dim" style="margin-top:6px;font-size:12px">Characters Windows cannot store are replaced automatically in the suggestion.</div>
+       ${IS_MAC ? '<div class="dim" style="margin-top:4px;font-size:12px">This Mac can store the name either way, but a Windows machine sharing the folder cannot.</div>' : ''}`
     : '';
 
   openModal({

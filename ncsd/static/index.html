@@ -19,10 +19,12 @@
   <div class="topbar-actions">
     <button class="btn ghost" id="btn-client" title="Quit or start the Nextcloud desktop client">Client…</button>
     <button class="btn ghost" id="btn-audit" title="Show the audit trail and backups">History</button>
-    <button class="btn ghost" id="btn-deep" title="Crawl the server tree for names Windows cannot store">Deep scan</button>
+    <button class="btn ghost" id="btn-deep" title="Crawl the server tree for names Windows cannot store, case clashes and very long paths">Deep scan</button>
     <button class="btn primary" id="btn-scan">Rescan</button>
   </div>
 </header>
+
+<div class="platformbanner" id="platformbanner" hidden></div>
 
 <div class="deepbanner" id="deepbanner" hidden>
   <div class="deepbanner-text" id="deepbanner-text">Scanning server…</div>
@@ -48,8 +50,7 @@
   <section id="empty" class="empty" hidden>
     <div class="empty-icon">✅</div>
     <h2>No sync problems found</h2>
-    <p>Everything in this folder is in sync. If the client still shows a warning, it is most likely the
-      known bug where ignored files (<code>._*</code>, <code>.DS_Store</code>) are reported as errors.</p>
+    <div id="empty-detail"></div>
   </section>
 </main>
 

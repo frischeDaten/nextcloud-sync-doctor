@@ -100,6 +100,37 @@ code { font-family: var(--mono); font-size: .92em; background: var(--panel-2); p
 .progress { height: 6px; background: var(--noise-bg); border-radius: 99px; overflow: hidden; }
 .progress-fill { height: 100%; width: 0; background: var(--accent); transition: width .3s ease; }
 
+/* ---------- local folder check ---------- */
+.localrows { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.localrow {
+  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  font-size: 12.5px; word-break: break-word;
+}
+.localrow .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.localrow .dim { color: var(--muted); margin-top: 2px; }
+#empty-detail .err { color: var(--blocking); }
+
+/* ---------- platform banner (macOS folder facts) ---------- */
+.platformbanner {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  max-width: 1180px;
+  margin: 18px auto -6px;
+  padding: 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.platformbanner[hidden] { display: none; }
+.platformbanner-text { flex: 1; color: var(--muted); }
+.platformbanner-text p { margin: 0 0 6px; }
+.platformbanner-text p:last-child { margin-bottom: 0; }
+.platformbanner-text b { color: var(--text); }
+
 /* ---------- layout ---------- */
 main { max-width: 1180px; margin: 0 auto; padding: 22px; }
 footer {

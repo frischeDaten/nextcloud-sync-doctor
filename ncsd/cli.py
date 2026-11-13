@@ -8,17 +8,25 @@ import os
 import sys
 import time
 
-from . import __version__, config, creds, detect, journal as journal_mod, names
+from . import __version__, config, creds, detect, journal as journal_mod, names, platform
 from .dav import Dav
 from .model import KINDS
 from .state import Store
 
 
-def build_session(account_index: int = 0, folder_index: int = 0, password: str | None = None):
-    cfg = config.load_config()
+def build_session(account_index: int = 0, folder_index: int = 0, password: str | None = None,
+                  config_path: str | None = None):
+    cfg = config.load_config(config_path)
     account = cfg.account(account_index)
     if not account.folders:
-        raise SystemExit("The selected account has no sync folders configured.")
+        if platform.is_macos() and account.file_provider_domain:
+            raise config.fileprovider_folder_missing_error(account)
+        raise SystemExit(
+            f"The selected account has no sync folders configured.\n"
+            f"  Config read: {cfg.path}\n"
+            f"  Accounts found: {len(cfg.accounts)}; folder keys: {', '.join(cfg.folder_keys) or 'none'}\n"
+            "If that is not the file the client uses, pass --config <nextcloud.cfg>."
+        )
     folder = next((f for f in account.folders if f.index == folder_index), account.folders[0])
     credential = creds.find_account_credential(account, explicit_password=password)
     dav = Dav(account.base_url, account.user, credential.token)
@@ -37,12 +45,14 @@ def collect_issues(
     deep_results=None,
 ):
     data_dir = os.path.join(store.data_dir, "snapshots")
+    journal_error = ""
     if journal_obj is None:
         try:
             journal_obj = journal_mod.load(folder.journal_path, data_dir)
             journal_mod.cleanup_snapshots(data_dir)
-        except journal_mod.JournalError:
+        except journal_mod.JournalError as exc:
             journal_obj = None
+            journal_error = str(exc)
 
     options = detect.ScanOptions(include_junk=include_junk, deep=deep, scope=scope)
     issues = detect.collect(account, folder, journal_obj, dav, options, deep_results=deep_results)
@@ -53,7 +63,7 @@ def collect_issues(
         entry = dismissed.get(issue.key)
         if entry and (not entry.get("until") or entry["until"] > now):
             issue.dismissed = True
-    return issues, journal_obj
+    return issues, journal_obj, journal_error
 
 
 def _fmt_ts(ts: float) -> str:
@@ -77,13 +87,15 @@ def cmd_scan(args) -> int:
 
         cfg, account, folder = demo.build_context()
         journal_obj = demo.DemoJournal()
+        journal_error = ""
         issues = demo.build_issues()
         if not args.junk:
             issues = [i for i in issues if i.kind != "junk"]
     else:
         store = Store()
-        cfg, account, folder, dav = build_session(args.account, args.folder, args.password)
-        issues, journal_obj = collect_issues(
+        cfg, account, folder, dav = build_session(args.account, args.folder, args.password,
+                                                  getattr(args, "config", None))
+        issues, journal_obj, journal_error = collect_issues(
             account, folder, dav, store,
             include_junk=args.junk, deep=args.deep, scope=args.scope,
         )
@@ -104,11 +116,15 @@ def cmd_scan(args) -> int:
     print(f"Nextcloud Sync Doctor {__version__}")
     if args.demo:
         print("Mode      : DEMO - synthetic data, nothing is read from your machine or the network")
+    print(f"Platform  : {platform.platform_name()}")
     print(f"Account   : {account.label}")
     print(f"Server    : {account.server_version or 'unknown'}   client config: {cfg.client_version}")
     print(f"Sync folder: {folder.local_root}  ->  {account.url}{folder.target_path}")
-    print(f"Journal   : {os.path.basename(folder.journal_path)}"
-          + (f"  ({len(journal_obj.rows)} indexed entries)" if journal_obj else "  (unavailable)"))
+    if folder.note:
+        print(f"             ({folder.note})")
+    print(f"Journal   : {os.path.basename(folder.journal_path) or '(none)'}"
+          + (f"  ({len(journal_obj.rows)} indexed entries)" if journal_obj
+             else f"  (unavailable: {journal_error})" if journal_error else "  (unavailable)"))
     print()
 
     if not real and not noise and not resolved:
@@ -152,7 +168,108 @@ def cmd_serve(args) -> int:
     from . import webui
 
     return webui.serve(account_index=args.account, folder_index=args.folder, port=args.port,
-                       open_browser=not args.no_browser, password=args.password, demo=args.demo)
+                       open_browser=not args.no_browser, password=args.password, demo=args.demo,
+                       config_path=args.config)
+
+
+# Folders checked only with --all; the default check covers what is likely to be in use.
+CHECK_DEFAULT_SKIP = platform.CHECK_DEFAULT_SKIP
+
+
+def cmd_check(args) -> int:
+    """Explain what the doctor can and cannot see, without needing the server."""
+    cfg = config.load_config(args.config)
+    account = cfg.account(args.account)
+    print(f"Nextcloud Sync Doctor {__version__} - check")
+    print(f"Platform  : {platform.platform_name()}")
+    print(f"Config    : {cfg.path}")
+    print(f"Account   : {account.label}   ({len(cfg.accounts)} account(s) in the config)")
+    if not account.folders:
+        print("Folder    : NOT FOUND")
+        if platform.is_macos() and account.file_provider_domain:
+            print(f"            {config.fileprovider_folder_missing_error(account)}")
+        else:
+            print(f"            folder keys in the config: {', '.join(cfg.folder_keys) or 'none'}")
+        return 2
+    folder = next((f for f in account.folders if f.index == args.folder), account.folders[0])
+    print(f"Folder    : {folder.local_root}   (source: {folder.source})")
+    if folder.note:
+        print(f"            {folder.note}")
+
+    # What the doctor can read on this machine.
+    logs = config.recent_logs()
+    print(f"Logs      : {len(logs)} file(s)" + (f", newest {_fmt_ts(os.path.getmtime(logs[-1]))}" if logs else ""))
+    try:
+        j = journal_mod.load(folder.journal_path, os.path.join(Store().data_dir, "snapshots"))
+        print(f"Journal   : {len(j.rows)} entries, {len(j.blacklist)} blacklisted")
+    except journal_mod.JournalError as exc:
+        print(f"Journal   : unavailable - {exc}")
+    print("Credentials: " + ("stored client credential found" if not args.password else "given on the command line"))
+
+    # What is on disk right now.
+    # On a FileProvider folder every directory costs a provider round-trip (~1 s), so
+    # a full walk of a big folder takes hours. Check what is likely to be in use and
+    # list the rest, instead of appearing to hang.
+    skipped: list[str] = []
+    roots: list[str]
+    if args.all:
+        roots = [folder.local_root]
+    else:
+        roots = []
+        try:
+            entries = sorted(os.listdir(folder.local_root))
+        except OSError as exc:
+            raise SystemExit(f"Cannot list the sync folder: {exc.strerror or exc}") from None
+        for name in entries:
+            path = os.path.join(folder.local_root, name)
+            if not os.path.isdir(path) or name.lower() in CHECK_DEFAULT_SKIP:
+                if os.path.isdir(path):
+                    skipped.append(name)
+                continue
+            roots.append(path)
+
+    print()
+    print("Checking the local names (no server, no journal needed)...")
+    if skipped:
+        print(f"  skipping {len(skipped)} large folder(s) by default: {', '.join(skipped)}")
+        print("  (use --all to include them; on a cloud folder each one costs a few minutes)")
+
+    reported = [0]
+
+    def progress(state):
+        # On a cloud folder a walk can take a minute or more; report so it does not
+        # look like a hang.
+        if state["files"] - reported[0] >= 2000:
+            reported[0] = state["files"]
+            print(f"  ... {state['dirs']} folder(s), {state['files']} file(s)", flush=True)
+
+    started = time.time()
+    state = detect.local_name_problems(roots, progress=progress, max_seconds=args.timeout,
+                                      base=folder.local_root)
+    took = time.time() - started
+    print(f"  {state['dirs']} folder(s), {state['files']} file(s) in {took:.1f}s"
+          + ("" if state["complete"] else
+             f" - stopped after the {args.timeout:.0f}s time limit, so this is not the whole "
+             "folder; re-run with a larger --timeout to finish"))
+    if not state["problems"]:
+        print("  no local name problems")
+        return 0
+    counts: dict[str, int] = {}
+    for problem in state["problems"]:
+        counts[problem["kind"]] = counts.get(problem["kind"], 0) + 1
+    print(f"  {len(state['problems'])} problem(s): " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    for problem in state["problems"][: args.limit]:
+        label = KINDS.get(problem["kind"], {}).get("label", problem["kind"])
+        print(f"    [{label}] {problem['path']}")
+        if problem["reason"]:
+            print(f"        {problem['reason']}")
+    if any(p["kind"] in ("filename_invalid", "mac_trash") for p in state["problems"]):
+        print()
+        print("  Fix them in the UI (Rescan -> Check the folder itself, then Rename local / "
+              "Delete local / Ignore), or by hand in Finder.")
+    if len(state["problems"]) > args.limit:
+        print(f"    ... and {len(state['problems']) - args.limit} more (raise --limit)")
+    return 0
 
 
 def cmd_report(args) -> int:
@@ -182,6 +299,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--folder", type=int, default=0, help="folder index within the account")
     parser.add_argument("--password", help="app password instead of the stored client token")
     parser.add_argument(
+        "--config", metavar="PATH",
+        help="read the client configuration from this nextcloud.cfg instead of the "
+             "default location (also: NCSD_CONFIG); useful when macOS hides the "
+             "client's own copy behind Full Disk Access",
+    )
+    parser.add_argument(
         "--demo", action="store_true",
         help="use synthetic demo data (no client, no server, nothing is changed)",
     )
@@ -191,7 +314,8 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--json", action="store_true", help="machine readable output")
     scan.add_argument("--junk", action="store_true", help="include .DS_Store / ._* noise")
     scan.add_argument("--all", action="store_true", help="include dismissed entries")
-    scan.add_argument("--deep", action="store_true", help="also crawl the server for Windows-invalid names")
+    scan.add_argument("--deep", action="store_true",
+                      help="also crawl the server for Windows-invalid names, case clashes and long paths")
     scan.add_argument("--scope", default="", help="limit a deep scan to this sub-folder")
     # default=SUPPRESS keeps the top-level --demo value when the flag is not repeated
     scan.add_argument("--demo", action="store_true", default=argparse.SUPPRESS,
@@ -204,6 +328,16 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--demo", action="store_true", default=argparse.SUPPRESS,
                        help="use synthetic demo data")
     serve.set_defaults(func=cmd_serve)
+
+    check = sub.add_parser("check", help="explain what the doctor can see, without the server")
+    check.add_argument("--verbose", action="store_true", help="print progress while walking the folder")
+    check.add_argument("--all", action="store_true",
+                       help="check the whole folder, including large archive trees (slow on a "
+                            "FileProvider folder: about a second per folder)")
+    check.add_argument("--limit", type=int, default=40, help="how many problems to print (default 40)")
+    check.add_argument("--timeout", type=float, default=180.0,
+                       help="seconds to spend walking the folder (default 180)")
+    check.set_defaults(func=cmd_check)
 
     report = sub.add_parser("report", help="show the action audit trail")
     report.add_argument("--limit", type=int, default=50)
